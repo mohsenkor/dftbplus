@@ -17,7 +17,14 @@
 !! structure of spin-flip / mixed-reference TDDFT). The TDA spin-flip A-matrix is
 !!
 !!   A_{ia,jb} = delta_ij F^beta_ab - delta_ab F^alpha_ij
-!!                 - sum_{AB} q^{ij}_A gamma^LR_{AB} q^{ab}_B .
+!!                 - sum_{AB} q^{ij}_A gamma^LR_{AB} q^{ab}_B
+!!                 + 2 sum_A W_A q^{ia}_A q^{jb}_A ,
+!!
+!! where the last term is the on-site spin (W) transverse coupling - the local part of the
+!! spin-flip kernel. Together with the long-range exchange it cancels the SOMO spin-splitting, so the
+!! M_S=0 component of the reference triplet returns at (near) zero excitation energy. This
+!! "reference recovery" is printed as a diagnostic and is the method's built-in spin-consistency
+!! check (e.g. for CH2 it drops from 2.4 eV without the W term to ~0.1 eV with it).
 !!
 !! Two references are supported:
 !!   * ROHF (default): a shared (restricted-open-shell) molecular orbital set is constructed from the
@@ -81,11 +88,16 @@ module dftbp_timedep_linrespsf
   !> Output file for spin-flip excitation energies
   character(*), parameter :: sfExcitationsOut = "SF.DAT"
 
+  !> Prefactor of the on-site spin (W) transverse coupling in the spin-flip kernel. The value 2
+  !! cancels the local-spin part of the SOMO splitting, restoring the reference-recovery condition
+  !! (the M_S=0 component of the reference triplet at zero excitation energy).
+  real(dp), parameter :: sfWfactor = 2.0_dp
+
 contains
 
   !> Calculate collinear spin-flip / mixed-reference spin-flip excitation energies (TDA, LC-DFTB).
   subroutine LinRespSF_calcExcitations(this, env, denseDesc, grndEigVecs, grndEigVal, SSqrReal,&
-      & filling, orb, hybridXc, fdTagged, taggedWriter, excEnergy, allExcEnergies)
+      & filling, species0, orb, hybridXc, fdTagged, taggedWriter, excEnergy, allExcEnergies)
 
     !> Linear response settings
     type(TLinResp), intent(inout) :: this
@@ -107,6 +119,9 @@ contains
 
     !> Ground state occupations (nOrb, nSpin)
     real(dp), intent(in) :: filling(:,:)
+
+    !> Chemical species of the atoms
+    integer, intent(in) :: species0(:)
 
     !> Atomic orbital information
     type(TOrbitals), intent(in) :: orb
@@ -132,8 +147,10 @@ contains
     real(dp), allocatable :: qOO(:,:,:), qVV(:,:,:)
     real(dp), allocatable :: faOcc(:,:), fbVir(:,:), faFull(:,:), fbFull(:,:)
     real(dp), allocatable :: aMat(:,:), aMrsf(:,:), tMat(:,:), eval(:)
-    real(dp), allocatable :: s2(:), xExp(:)
+    real(dp), allocatable :: s2(:), xExp(:), wAtom(:)
     integer, allocatable :: getIA(:,:), labIA(:,:), domIA(:,:)
+    integer :: it1, it2
+    real(dp) :: recoveryEnergy
 
   #:if WITH_SCALAPACK
     call error("Spin-flip linear response is not yet implemented for MPI/ScaLAPACK builds.")
@@ -231,6 +248,32 @@ contains
     ! Assemble the spin-flip TDA A-matrix
     call buildSpinFlipA(getIA, nOccB, nVirB, faOcc, fbVir, qOO, qVV, lrGamma, aMat)
 
+    ! Add the on-site spin (W) transverse coupling: the local part of the spin-flip kernel that
+    ! cancels the local-spin contribution to the SOMO splitting (restores reference recovery).
+    if (allocated(this%spinW)) then
+      allocate(wAtom(nAtom))
+      do ii = 1, nAtom
+        wAtom(ii) = this%spinW(species0(ii))
+      end do
+      if (this%tRohfRef) then
+        call addSpinFlipW(aMat, getIA, denseDesc, shVecs(:,:,1), ovrXev(:,:,1), shVecs(:,:,1),&
+            & ovrXev(:,:,1), wAtom, sfWfactor)
+      else
+        call addSpinFlipW(aMat, getIA, denseDesc, grndEigVecs(:,:,1), ovrXev(:,:,1),&
+            & grndEigVecs(:,:,2), ovrXev(:,:,2), wAtom, sfWfactor)
+      end if
+    end if
+
+    ! Reference-recovery diagnostic: energy of the M_S=0 component of the reference triplet,
+    ! i.e. the spin-adapted SOMO-pair triplet (O1->O1 + O2->O2)/sqrt(2). Exact spin symmetry
+    ! requires this to be ~0; the deviation measures the residual spin-flip kernel error.
+    recoveryEnergy = 0.0_dp
+    if (nOccA == nOccB + 2) then
+      it1 = (nOccB + 1 - 1) * nVirB + (nOccB + 1 - nOccB)
+      it2 = (nOccB + 2 - 1) * nVirB + (nOccB + 2 - nOccB)
+      recoveryEnergy = 0.5_dp * (aMat(it1, it1) + aMat(it2, it2) + 2.0_dp * aMat(it1, it2))
+    end if
+
     if (this%tMixedRef) then
       ! Mixed-reference (MRSF) spin-adaptation of the SOMO pair: A_MRSF = T^T A_SF T
       call mrsfReduce(aMat, getIA, nOccA, nOccB, nVirB, this%sfMultiplicity, aMrsf, labIA, tMat)
@@ -252,7 +295,8 @@ contains
           domIA(iState, :) = labIA(maxloc(aMrsf(:, iState)**2, dim=1), :)
         end do
       end if
-      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, this%sfMultiplicity)
+      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, this%sfMultiplicity,&
+          & recoveryEnergy)
     else
       ! Plain (spin-contaminated) spin-flip TDDFT
       allocate(eval(nSF))
@@ -263,7 +307,7 @@ contains
         s2(iState) = sfSpinSquare(aMat(:, iState), getIA, nOccA, nOccB)
         domIA(iState, :) = getIA(maxloc(aMat(:, iState)**2, dim=1), :)
       end do
-      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, 0)
+      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, 0, recoveryEnergy)
     end if
 
     allocate(allExcEnergies(nState))
@@ -333,6 +377,64 @@ contains
     end do
 
   end subroutine buildSpinFlipA
+
+
+  !> Add the on-site spin (W) transverse coupling to the spin-flip A-matrix:
+  !!   A_{ia,jb} += cW * sum_A W_A q^{ia}_A q^{jb}_A,
+  !! where q^{ia}_A is the (cross-spin) spin-flip transition charge on atom A. This is the local
+  !! transverse part of the spin-flip exchange-correlation kernel (the analogue of the magnetisation
+  !! coupling used for triplet excitations); together with the long-range exchange it cancels the
+  !! SOMO spin-splitting, so the M_S=0 component of the reference triplet returns at zero energy.
+  subroutine addSpinFlipW(aMat, getIA, denseDesc, occVec, occOvr, virVec, virOvr, wAtom, cW)
+
+    !> Spin-flip A-matrix (modified in place)
+    real(dp), intent(inout) :: aMat(:,:)
+
+    !> Transition index map [i, a]
+    integer, intent(in) :: getIA(:,:)
+
+    !> Dense matrix descriptor (atom -> orbital ranges)
+    type(TDenseDescr), intent(in) :: denseDesc
+
+    !> Occupied-channel MO coefficients and S times them
+    real(dp), intent(in) :: occVec(:,:), occOvr(:,:)
+
+    !> Virtual-channel MO coefficients and S times them
+    real(dp), intent(in) :: virVec(:,:), virOvr(:,:)
+
+    !> Per-atom spin constant W
+    real(dp), intent(in) :: wAtom(:)
+
+    !> Prefactor
+    real(dp), intent(in) :: cW
+
+    integer :: nSF, nAtom, iT, jT, ii, aa, kk, m1, m2
+    real(dp), allocatable :: qIA(:,:)
+    real(dp) :: s
+
+    nSF = size(getIA, dim=1)
+    nAtom = size(wAtom)
+    allocate(qIA(nAtom, nSF))
+    do iT = 1, nSF
+      ii = getIA(iT, 1)
+      aa = getIA(iT, 2)
+      do kk = 1, nAtom
+        m1 = denseDesc%iAtomStart(kk)
+        m2 = denseDesc%iAtomStart(kk + 1) - 1
+        qIA(kk, iT) = 0.5_dp * sum(occVec(m1:m2, ii) * virOvr(m1:m2, aa)&
+            & + virVec(m1:m2, aa) * occOvr(m1:m2, ii))
+      end do
+    end do
+
+    do iT = 1, nSF
+      do jT = 1, iT
+        s = cW * sum(wAtom(:) * qIA(:, iT) * qIA(:, jT))
+        aMat(iT, jT) = aMat(iT, jT) + s
+        if (iT /= jT) aMat(jT, iT) = aMat(jT, iT) + s
+      end do
+    end do
+
+  end subroutine addSpinFlipW
 
 
   !> Construct a restricted-open-shell (shared) MO set and the spin-resolved Fock matrices in it.
@@ -721,7 +823,7 @@ contains
 
 
   !> Write spin-flip excitation energies, <S^2> and tagged output.
-  subroutine writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, mult)
+  subroutine writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, mult, recoveryEnergy)
 
     !> Excitation energies (ascending)
     real(dp), intent(in) :: eval(:)
@@ -744,6 +846,9 @@ contains
     !> Target multiplicity (0 = plain SF, 1 = MRSF singlet, 3 = MRSF triplet)
     integer, intent(in) :: mult
 
+    !> Reference-recovery energy (M_S=0 component of the reference triplet; should be ~0)
+    real(dp), intent(in) :: recoveryEnergy
+
     type(TFileDescr) :: fdSF
     integer :: iState
     character(40) :: methodStr
@@ -758,11 +863,15 @@ contains
     end select
 
     write(stdOut, "(/,A)") " "//trim(methodStr)//" excitations:"
+    write(stdOut, "(2X,A,F12.6,A)") "Reference recovery (should be ~0): ",&
+        & recoveryEnergy * Hartree__eV, " eV"
     write(stdOut, "(2X,A6,2X,A14,2X,A12,2X,A8,2X,A12)") "State", "energy (eV)", "omega (au)",&
         & "<S^2>", "dominant i->a"
 
     call openFile(fdSF, sfExcitationsOut, mode="w")
     write(fdSF%unit, "(A)") "# "//trim(methodStr)//" excitations"
+    write(fdSF%unit, "(A,F16.8,A)") "# reference recovery (should be ~0): ",&
+        & recoveryEnergy * Hartree__eV, " eV"
     write(fdSF%unit, "(A)") "# state    energy(eV)         omega(au)        <S^2>     dominant"
 
     do iState = 1, nState

@@ -33,6 +33,11 @@ Added
   closed->SOMO and SOMO->virtual states (<S^2> -> 0 / 2) wherever the
   spectator-SOMO exchange is significant.
 
+- On-site spin (W) transverse term in the spin-flip kernel, restoring the
+  reference-recovery condition (the M_S=0 component of the reference triplet at
+  ~0 excitation energy); the recovery value is printed as a spin-consistency
+  diagnostic.
+
 - MPI-parallelization of Waveplot
 
 - Generalization of mixers to also handle complex density matrices
