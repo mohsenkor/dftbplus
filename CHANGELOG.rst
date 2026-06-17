@@ -15,9 +15,14 @@ Added
   approximation for range-separated (LC-)DFTB, requested via the
   ``ExcitedState/SpinFlip`` block. The spin-flip (alpha-occupied ->
   beta-virtual) manifold is solved on a high-spin (M_S = +1) reference, with
-  the off-diagonal coupling carried by the long-range exact exchange. This is
-  the first stage towards a mixed-reference spin-flip (MRSF-TDDFT)
-  implementation.
+  the off-diagonal coupling carried by the long-range exact exchange.
+
+- Mixed-reference spin-flip TDDFT (MRSF-TDDFT) for range-separated (LC-)DFTB,
+  enabled by ``MixedReference = Yes`` (with ``Multiplicity = Singlet`` or
+  ``Triplet``) in the ``ExcitedState/SpinFlip`` block. The two singly-occupied
+  orbital flip configurations are spin-adapted (1/sqrt(2) combinations) on a
+  high-spin triplet reference, removing the spin contamination of plain
+  spin-flip TDDFT.
 
 - MPI-parallelization of Waveplot
 

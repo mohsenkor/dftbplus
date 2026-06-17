@@ -20,11 +20,17 @@
 !!   A_{ia,jb} = delta_ij delta_ab (eps^beta_a - eps^alpha_i)
 !!                 - sum_{AB} q^{alpha,ij}_A gamma^LR_{AB} q^{beta,ab}_B
 !!
-!! This is the first ("SF-TDDFT") stage of a mixed-reference (MRSF) implementation; the
-!! mixed-reference 1/sqrt(2) spin-adaptation of the singly-occupied orbitals is layered on top of
-!! this manifold in a subsequent step.
+!! With MixedReference = Yes the mixed-reference spin-adaptation (MRSF-TDDFT) is applied: the two
+!! singly-occupied (SOMO) flip configurations O1->O1 and O2->O2 are combined with +-1/sqrt(2)
+!! (singlet: antisymmetric, triplet: symmetric) and the cross SOMO configurations are removed,
+!! which removes the spin contamination of plain spin-flip TDDFT. In the Tamm-Dancoff
+!! approximation this is the congruence A_MRSF = T^T A_SF T of the spin-flip operator with the
+!! spin-adaptation transformation T (cf. Lee et al., J. Chem. Phys. 149, 104101 (2018)).
 !!
-!! Note: currently restricted to the serial (non-MPI) build and integer occupations.
+!! Note: currently restricted to the serial (non-MPI) build and integer occupations. Because the
+!! collinear DFTB reference yields separate alpha/beta orbitals (UHF-like), the SOMO pair is
+!! identified by index (U-MRSF flavour); rigorous maximal-overlap alpha/beta alignment is a
+!! possible later refinement.
 module dftbp_timedep_linrespsf
   use dftbp_common_accuracy, only : dp, elecTolMax
   use dftbp_common_constants, only : Hartree__eV, cExchange
@@ -93,12 +99,12 @@ contains
     !> Energies of all solved states
     real(dp), intent(inout), allocatable :: allExcEnergies(:)
 
-    integer :: nOrb, nSpin, nAtom, nOccA, nOccB, nVirA, nVirB, nSF
+    integer :: nOrb, nSpin, nAtom, nOccA, nOccB, nVirA, nVirB, nSF, nMat
     integer :: ii, jj, aa, bb, ap, bp, iT, jT, nState
     real(dp), allocatable :: ovrXev(:,:,:), lrGamma(:,:)
     real(dp), allocatable :: qOO(:,:,:), qVV(:,:,:), gqVV(:,:,:)
-    real(dp), allocatable :: aMat(:,:), eval(:), wia(:)
-    integer, allocatable :: getIA(:,:)
+    real(dp), allocatable :: aMat(:,:), aMrsf(:,:), eval(:), wia(:)
+    integer, allocatable :: getIA(:,:), labIA(:,:)
 
   #:if WITH_SCALAPACK
     call error("Spin-flip linear response is not yet implemented for MPI/ScaLAPACK builds.")
@@ -195,23 +201,134 @@ contains
       aMat(iT, iT) = aMat(iT, iT) + wia(iT)
     end do
 
-    ! Diagonalise (eigenvalues ascending; negative roots are physical for spin-flip)
-    allocate(eval(nSF))
-    call heev(aMat, eval, "U", "V")
-
-    nState = this%nExc
-    allocate(allExcEnergies(nState))
-    allExcEnergies(:) = eval(1:nState)
-
-    if (this%nStat > 0) then
-      excEnergy = eval(this%nStat)
+    if (this%tMixedRef) then
+      ! Mixed-reference (MRSF) spin-adaptation of the singly-occupied (SOMO) flip configurations.
+      ! The MRSF Tamm-Dancoff problem is the congruence A_MRSF = T^T A_SF T, where T combines the
+      ! O1->O1 and O2->O2 configurations with +-1/sqrt(2) (singlet: subtract, triplet: add) and the
+      ! cross SOMO configurations are removed/zeroed (cf. Lee et al., JCP 149, 104101 (2018)).
+      call mrsfReduce(aMat, getIA, nOccA, nOccB, nVirB, this%sfMultiplicity, aMrsf, labIA)
+      nMat = size(aMrsf, dim=1)
+      allocate(eval(nMat))
+      call heev(aMrsf, eval, "U", "V")
+      nState = min(this%nExc, nMat)
+      allocate(allExcEnergies(nState))
+      allExcEnergies(:) = eval(1:nState)
+      if (this%nStat > 0 .and. this%nStat <= nMat) then
+        excEnergy = eval(this%nStat)
+      else
+        excEnergy = 0.0_dp
+      end if
+      call writeSFResults(eval, aMrsf, labIA, nState, fdTagged, taggedWriter, this%sfMultiplicity)
     else
-      excEnergy = 0.0_dp
+      ! Plain (spin-contaminated) spin-flip TDDFT.
+      ! Eigenvalues ascending; negative roots are physical for spin-flip.
+      allocate(eval(nSF))
+      call heev(aMat, eval, "U", "V")
+      nState = min(this%nExc, nSF)
+      allocate(allExcEnergies(nState))
+      allExcEnergies(:) = eval(1:nState)
+      if (this%nStat > 0 .and. this%nStat <= nSF) then
+        excEnergy = eval(this%nStat)
+      else
+        excEnergy = 0.0_dp
+      end if
+      call writeSFResults(eval, aMat, getIA, nState, fdTagged, taggedWriter, 0)
     end if
 
-    call writeSFResults(eval, aMat, getIA, nState, fdTagged, taggedWriter)
-
   end subroutine LinRespSF_calcExcitations
+
+
+  !> Reduce the spin-flip A-matrix to the mixed-reference (MRSF) spin-adapted A-matrix.
+  !!
+  !! Builds the spin-adaptation transformation T (with orthonormal columns) that combines the two
+  !! singly-occupied (SOMO) flip configurations O1->O1 and O2->O2, then returns A_MRSF = T^T A_SF T.
+  subroutine mrsfReduce(aSF, getIA, nOccA, nOccB, nVirB, mult, aMrsf, labIA)
+
+    !> Spin-flip A-matrix in the expanded (alpha-occ -> beta-vir) basis
+    real(dp), intent(in) :: aSF(:,:)
+
+    !> Transition index map for the expanded basis
+    integer, intent(in) :: getIA(:,:)
+
+    !> Number of alpha-occupied / beta-occupied orbitals and beta-virtuals
+    integer, intent(in) :: nOccA, nOccB, nVirB
+
+    !> Target multiplicity of the MRSF states (1 = singlet, 3 = triplet)
+    integer, intent(in) :: mult
+
+    !> Reduced MRSF A-matrix
+    real(dp), allocatable, intent(out) :: aMrsf(:,:)
+
+    !> Representative transition labels for the reduced (active) configurations
+    integer, allocatable, intent(out) :: labIA(:,:)
+
+    integer :: nSF, o1, o2, ijlr1, ijlr2, ijg, ijd, nRem, nC, ee, col
+    logical, allocatable :: active(:)
+    real(dp), allocatable :: tMat(:,:)
+    real(dp) :: isq2, signLr2
+
+    if (nOccA /= nOccB + 2) then
+      call error("MRSF requires a high-spin triplet reference with exactly two unpaired electrons&
+          & (SpinPolarisation = Colinear { UnpairedElectrons = 2 }).")
+    end if
+    if (mult /= 1 .and. mult /= 3) then
+      call error("MRSF Multiplicity must be 1 (singlet) or 3 (triplet).")
+    end if
+
+    nSF = size(aSF, dim=1)
+    isq2 = 1.0_dp / sqrt(2.0_dp)
+
+    ! Singly-occupied orbitals O1 = HOMO-1, O2 = HOMO of the alpha channel
+    o1 = nOccB + 1
+    o2 = nOccB + 2
+
+    ! Expanded compound indices iT = (i-1)*nVirB + (a-nOccB) for the four SOMO-flip configurations
+    ijlr1 = (o1 - 1) * nVirB + (o1 - nOccB)
+    ijlr2 = (o2 - 1) * nVirB + (o2 - nOccB)
+    ijg = (o2 - 1) * nVirB + (o1 - nOccB)
+    ijd = (o1 - 1) * nVirB + (o2 - nOccB)
+
+    allocate(active(nSF))
+    active(:) = .true.
+    if (mult == 1) then
+      ! Singlet: O1->O1 and O2->O2 combine antisymmetrically; cross configurations are retained
+      active(ijlr2) = .false.
+      nRem = 1
+      signLr2 = -isq2
+    else
+      ! Triplet: O1->O1 and O2->O2 combine symmetrically; cross configurations are removed
+      active(ijlr2) = .false.
+      active(ijg) = .false.
+      active(ijd) = .false.
+      nRem = 3
+      signLr2 = isq2
+    end if
+    nC = nSF - nRem
+
+    allocate(tMat(nSF, nC))
+    tMat(:,:) = 0.0_dp
+    allocate(labIA(nC, 2))
+    col = 0
+    do ee = 1, nSF
+      if (.not. active(ee)) cycle
+      col = col + 1
+      if (ee == ijlr1) then
+        ! Spin-adapted SOMO-pair configuration
+        tMat(ijlr1, col) = isq2
+        tMat(ijlr2, col) = signLr2
+        labIA(col, :) = [o1, o2]
+      else
+        tMat(ee, col) = 1.0_dp
+        labIA(col, :) = getIA(ee, :)
+      end if
+    end do
+
+    allocate(aMrsf(nC, nC))
+    aMrsf(:,:) = matmul(transpose(tMat), matmul(aSF, tMat))
+    ! Enforce exact symmetry (guard against round-off)
+    aMrsf(:,:) = 0.5_dp * (aMrsf + transpose(aMrsf))
+
+  end subroutine mrsfReduce
 
 
   !> Count occupied and virtual orbitals in a spin channel (integer occupations).
@@ -247,7 +364,7 @@ contains
 
 
   !> Write spin-flip excitation energies, dominant transition character and tagged output.
-  subroutine writeSFResults(eval, eigVec, getIA, nState, fdTagged, taggedWriter)
+  subroutine writeSFResults(eval, eigVec, getIA, nState, fdTagged, taggedWriter, mult)
 
     !> Excitation energies (all roots, ascending)
     real(dp), intent(in) :: eval(:)
@@ -267,16 +384,29 @@ contains
     !> Tagged writer
     type(TTaggedWriter), intent(inout) :: taggedWriter
 
+    !> Target multiplicity (0 = plain SF, 1 = MRSF singlet, 3 = MRSF triplet)
+    integer, intent(in) :: mult
+
     type(TFileDescr) :: fdSF
     integer :: iState, iT, iMax
     real(dp) :: wMax
+    character(40) :: methodStr
 
-    write(stdOut, "(/,A)") " Spin-flip excitations (TDA, LC-DFTB exchange kernel):"
+    select case (mult)
+    case (1)
+      methodStr = "MRSF singlet (TDA, LC-DFTB)"
+    case (3)
+      methodStr = "MRSF triplet (TDA, LC-DFTB)"
+    case default
+      methodStr = "spin-flip (TDA, LC-DFTB)"
+    end select
+
+    write(stdOut, "(/,A)") " "//trim(methodStr)//" excitations:"
     write(stdOut, "(2X,A6,2X,A14,2X,A14,2X,A20)") "State", "energy (au)", "energy (eV)",&
-        & "dominant i(a)->a(b)"
+        & "dominant i->a"
 
     call openFile(fdSF, sfExcitationsOut, mode="w")
-    write(fdSF%unit, "(A)") "# Spin-flip excitations (TDA, LC-DFTB)"
+    write(fdSF%unit, "(A)") "# "//trim(methodStr)//" excitations"
     write(fdSF%unit, "(A)") "# state   energy(eV)        omega(au)     dominant transition"
 
     do iState = 1, nState

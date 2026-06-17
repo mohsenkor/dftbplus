@@ -5726,6 +5726,8 @@ spin-flip (MRSF-TDDFT) implementation.
 \begin{ptable}
   \kw{NrOfExcitations} & i & & - & \\
   \kw{StateOfInterest} & i & & 0 & \\
+  \kw{MixedReference}  & l & & No & \\
+  \kw{Multiplicity}    & s & \is{MixedReference} = Yes & Singlet & \\
 \end{ptable}
 
 \begin{description}
@@ -5736,6 +5738,17 @@ spin-flip (MRSF-TDDFT) implementation.
 \item[\is{StateOfInterest}] Specifies the target excited state, numbered from
   the lowest spin-flip state as 1. If set to zero (default), the energies of
   all requested states are reported but no single state energy is returned.
+
+\item[\is{MixedReference}] If set to \is{Yes}, the mixed-reference
+  spin-adaptation (MRSF-TDDFT) is applied to the spin-flip manifold. The two
+  singly-occupied (SOMO) flip configurations are combined into a spin-adapted
+  configuration (singlet: antisymmetric, triplet: symmetric), which removes the
+  spin contamination of plain spin-flip TDDFT. This requires a high-spin
+  triplet reference (\is{UnpairedElectrons} $= 2$).
+
+\item[\is{Multiplicity}] Target multiplicity of the MRSF states, either
+  \is{Singlet} or \is{Triplet}. Only used when \is{MixedReference} $=$
+  \is{Yes}.
 
 \end{description}
 

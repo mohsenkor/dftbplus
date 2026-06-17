@@ -129,6 +129,12 @@ module dftbp_timedep_linresp
     !> Calculate collinear spin-flip (SF-TDDFT) excitations instead of Casida
     logical :: tSpinFlip = .false.
 
+    !> Use the mixed-reference spin-adaptation (MRSF-TDDFT) of the spin-flip manifold
+    logical :: tMixedRef = .false.
+
+    !> Target multiplicity for MRSF states (1 = singlet, 3 = triplet)
+    integer :: sfMultiplicity = 1
+
   end type TLinrespini
 
 
@@ -188,6 +194,8 @@ contains
     this%nStat = ini%nStat
     this%symmetry = ini%sym
     this%tSpinFlip = ini%tSpinFlip
+    this%tMixedRef = ini%tMixedRef
+    this%sfMultiplicity = ini%sfMultiplicity
 
     this%writeExcitations = isIoProc
     this%tWriteDensityMatrix = ini%tWriteDensityMatrix .and. isIoProc

@@ -5134,6 +5134,21 @@ contains
         end if
       end if
 
+      ! Mixed-reference spin-adaptation (MRSF-TDDFT)
+      call getChildValue(child, "MixedReference", ctrl%lrespini%tMixedRef, default=.false.)
+      if (ctrl%lrespini%tMixedRef) then
+        call getChildValue(child, "Multiplicity", buffer, "Singlet", child=child2)
+        select case (tolower(unquote(char(buffer))))
+        case ("singlet")
+          ctrl%lrespini%sfMultiplicity = 1
+        case ("triplet")
+          ctrl%lrespini%sfMultiplicity = 3
+        case default
+          call detailedError(child2, "Invalid MRSF Multiplicity '" // char(buffer) // &
+              & "' (must be 'Singlet' or 'Triplet').")
+        end select
+      end if
+
     end if
 
   end subroutine readExcited
@@ -5146,6 +5161,8 @@ contains
     type(TLinrespini), intent(inout) :: lrespini
 
     lrespini%tSpinFlip = .true.
+    lrespini%tMixedRef = .false.
+    lrespini%sfMultiplicity = 1
     ! Spin-polarised reference: no singlet/triplet symmetry label
     lrespini%sym = ' '
     lrespini%nexc = 0

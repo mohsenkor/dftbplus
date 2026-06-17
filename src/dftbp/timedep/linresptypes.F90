@@ -71,6 +71,12 @@ module dftbp_timedep_linresptypes
     !> Calculate collinear spin-flip (SF-TDDFT) excitations instead of Casida
     logical :: tSpinFlip = .false.
 
+    !> Use the mixed-reference spin-adaptation (MRSF-TDDFT) of the spin-flip manifold
+    logical :: tMixedRef = .false.
+
+    !> Target multiplicity for MRSF states (1 = singlet, 3 = triplet)
+    integer :: sfMultiplicity = 1
+
     !> Ground state spin constants for each species
     real(dp), allocatable :: spinW(:)
 
