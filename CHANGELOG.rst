@@ -28,6 +28,11 @@ Added
   each spin-flip / MRSF state (exact in the ROHF basis) to ``SF.DAT`` and the
   tagged output.
 
+- Spin-complete MRSF (``SpinComplete = Yes``): the single-SOMO blocks are
+  augmented with their M_S=-1 partner configurations, purifying the
+  closed->SOMO and SOMO->virtual states (<S^2> -> 0 / 2) wherever the
+  spectator-SOMO exchange is significant.
+
 - MPI-parallelization of Waveplot
 
 - Generalization of mixers to also handle complex density matrices

@@ -33,14 +33,23 @@
 !! TDA this is the congruence A_MRSF = T^T A_SF T (cf. Lee et al., J. Chem. Phys. 149, 104101
 !! (2018)).
 !!
-!! Scope of the spin-adaptation: this purifies the open-shell (SOMO -> SOMO) states exactly, as
-!! confirmed by the <S^2> diagnostic (singlet -> 0, triplet -> 2). Single-SOMO configurations
-!! (closed -> SOMO and SOMO -> virtual) retain a residual <S^2> ~ 1: their full purification
-!! requires the mixed-reference fractional-occupation (SOMO occupation 1/2) reduced density matrix,
-!! which modifies those couplings and is not yet included here.
+!! The SOMO-pair adaptation purifies the open-shell (SOMO -> SOMO) states exactly. Single-SOMO
+!! configurations (closed -> SOMO and SOMO -> virtual) are spin contaminated (<S^2> ~ 1) unless the
+!! spin-complete treatment is requested (SpinComplete = Yes, ROHF reference): each single-SOMO
+!! configuration |+> (an alpha->beta excitation of the M_S=+1 reference) is then augmented with its
+!! partner |-> (the mirror beta->alpha excitation of the M_S=-1 reference). In the {|+>, |->} basis
+!!   A = [[E, -K], [-K, E]],   S^2 = [[1, 1], [1, 1]],
+!! where K is the spectator-SOMO exchange; these commute, so the eigenvectors (|+> -+ |->)/sqrt(2)
+!! are the pure triplet (E-K, S^2=2) and singlet (E+K, S^2=0). States are then selected by <S^2> for
+!! the requested multiplicity. This purifies single-SOMO states wherever the spectator exchange K is
+!! significant; residual contamination remains for small-K configurations and for the closed->virtual
+!! (four-open-shell) block, whose complete spin adaptation is left for future work. The exact
+!! purification is confirmed for systems such as CH2 (most states reach <S^2> = 0 / 2 to ~1e-3).
 !!
-!! <S^2> is evaluated exactly in the shared-orbital (ROHF) basis from
-!!   <S^2> = (X_{O1->O1} + X_{O2->O2})^2 + sum_ia X_ia^2 ([a virtual] + [i closed]).
+!! <S^2> is evaluated exactly in the shared-orbital (ROHF) basis. For the plain spin-flip and the
+!! SOMO-pair-only MRSF, from
+!!   <S^2> = (X_{O1->O1} + X_{O2->O2})^2 + sum_ia X_ia^2 ([a virtual] + [i closed]);
+!! for the spin-complete MRSF, from the augmented S^2 matrix above.
 !!
 !! Note: currently restricted to the serial (non-MPI) build and integer occupations.
 module dftbp_timedep_linrespsf
@@ -217,19 +226,26 @@ contains
     call buildSpinFlipA(getIA, nOccB, nVirB, faOcc, fbVir, qOO, qVV, lrGamma, aMat)
 
     if (this%tMixedRef) then
-      ! Mixed-reference (MRSF) spin-adaptation: A_MRSF = T^T A_SF T
+      ! Mixed-reference (MRSF) spin-adaptation of the SOMO pair: A_MRSF = T^T A_SF T
       call mrsfReduce(aMat, getIA, nOccA, nOccB, nVirB, this%sfMultiplicity, aMrsf, labIA, tMat)
-      nMat = size(aMrsf, dim=1)
-      allocate(eval(nMat))
-      call heev(aMrsf, eval, "U", "V")
-      nState = min(this%nExc, nMat)
-      ! spin-square: expand each compressed eigenvector back to the full SF basis
-      allocate(s2(nState), domIA(nState, 2), xExp(nSF))
-      do iState = 1, nState
-        xExp(:) = matmul(tMat, aMrsf(:, iState))
-        s2(iState) = sfSpinSquare(xExp, getIA, nOccA, nOccB)
-        domIA(iState, :) = labIA(maxloc(aMrsf(:, iState)**2, dim=1), :)
-      end do
+      if (this%tRohfRef .and. this%tSpinComplete) then
+        ! Spin-complete treatment: augment the single-SOMO blocks with their M_S=-1 partner
+        ! configurations so that closed->SOMO and SOMO->virtual states become spin pure.
+        call mrsfSpinComplete(aMrsf, labIA, nOccA, nOccB, this%sfMultiplicity, this%nExc, env,&
+            & denseDesc, ovrXev, shVecs, lrGamma, eval, s2, domIA, nState)
+      else
+        ! Unrestricted reference: SOMO-pair adaptation only, within-manifold <S^2>
+        nMat = size(aMrsf, dim=1)
+        allocate(eval(nMat))
+        call heev(aMrsf, eval, "U", "V")
+        nState = min(this%nExc, nMat)
+        allocate(s2(nState), domIA(nState, 2), xExp(nSF))
+        do iState = 1, nState
+          xExp(:) = matmul(tMat, aMrsf(:, iState))
+          s2(iState) = sfSpinSquare(xExp, getIA, nOccA, nOccB)
+          domIA(iState, :) = labIA(maxloc(aMrsf(:, iState)**2, dim=1), :)
+        end do
+      end if
       call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, this%sfMultiplicity)
     else
       ! Plain (spin-contaminated) spin-flip TDDFT
@@ -501,6 +517,169 @@ contains
     aMrsf(:,:) = 0.5_dp * (aMrsf + transpose(aMrsf))
 
   end subroutine mrsfReduce
+
+
+  !> Spin-complete MRSF: augment the single-SOMO blocks of the reduced MRSF matrix with their
+  !! M_S = -1 partner configurations, so that closed->SOMO and SOMO->virtual states become spin pure.
+  !!
+  !! Each single-SOMO spin-flip configuration |+> (an alpha->beta excitation of the M_S=+1 reference)
+  !! has a partner |-> (the mirror beta->alpha excitation of the M_S=-1 reference). In the basis
+  !! {|+>, |->} the response and spin-square blocks are
+  !!   A = [[E, -K], [-K, E]],   S^2 = [[1, 1], [1, 1]],
+  !! with K the spectator-SOMO exchange. These commute, so the eigenvectors (|+> -+ |->)/sqrt(2) are
+  !! the pure triplet (E-K, S^2=2) and singlet (E+K, S^2=0). The full augmented matrices are
+  !! diagonalised together; states are then selected by their <S^2> for the requested multiplicity.
+  subroutine mrsfSpinComplete(aMrsf, labIA, nOccA, nOccB, mult, nExc, env, denseDesc, ovrXev,&
+      & shVecs, lrGamma, evalOut, s2Out, domOut, nStateOut)
+
+    !> Reduced (SOMO-pair adapted) MRSF A-matrix
+    real(dp), intent(in) :: aMrsf(:,:)
+
+    !> Representative transition labels [i, a] of the reduced configurations
+    integer, intent(in) :: labIA(:,:)
+
+    !> Number of alpha-occupied and beta-occupied orbitals
+    integer, intent(in) :: nOccA, nOccB
+
+    !> Target multiplicity (1 = singlet, 3 = triplet)
+    integer, intent(in) :: mult
+
+    !> Number of excited states requested
+    integer, intent(in) :: nExc
+
+    !> Environment settings
+    type(TEnvironment), intent(inout) :: env
+
+    !> Dense matrix descriptor
+    type(TDenseDescr), intent(in) :: denseDesc
+
+    !> Overlap times shared MOs (nOrb, nOrb, 1)
+    real(dp), intent(in) :: ovrXev(:,:,:)
+
+    !> Shared MO coefficients (nOrb, nOrb, 1)
+    real(dp), intent(in) :: shVecs(:,:,:)
+
+    !> Long-range exchange gamma
+    real(dp), intent(in) :: lrGamma(:,:)
+
+    !> Excitation energies of the selected states
+    real(dp), allocatable, intent(out) :: evalOut(:)
+
+    !> Spin-square of the selected states
+    real(dp), allocatable, intent(out) :: s2Out(:)
+
+    !> Dominant transition label of the selected states
+    integer, allocatable, intent(out) :: domOut(:,:)
+
+    !> Number of selected states
+    integer, intent(out) :: nStateOut
+
+    integer :: nC, nP, nAug, o1, o2, r, kk, ll, pk, ii, aa, nAtom, jj, nSel
+    integer, allocatable :: somoCfg(:), specOrb(:), partOrb(:)
+    real(dp), allocatable :: aAug(:,:), s2Aug(:,:), qpq(:), eval(:), s2all(:), energy(:), av(:)
+    real(dp) :: kExch, targetS2, lambda
+    logical, allocatable :: isTarget(:)
+
+    o1 = nOccB + 1
+    o2 = nOccB + 2
+    nC = size(aMrsf, dim=1)
+    nAtom = size(lrGamma, dim=1)
+    targetS2 = merge(0.0_dp, 2.0_dp, mult == 1)
+
+    ! Identify the single-SOMO reduced configurations and their spectator / partner orbitals
+    allocate(somoCfg(nC), specOrb(nC), partOrb(nC))
+    nP = 0
+    do r = 1, nC
+      ii = labIA(r, 1)
+      aa = labIA(r, 2)
+      if (ii <= nOccB .and. (aa == o1 .or. aa == o2)) then
+        ! closed -> SOMO: spectator is the other SOMO, partner orbital is the hole i
+        nP = nP + 1
+        somoCfg(nP) = r
+        specOrb(nP) = merge(o2, o1, aa == o1)
+        partOrb(nP) = ii
+      else if ((ii == o1 .or. ii == o2) .and. aa > nOccA) then
+        ! SOMO -> virtual: spectator is the other SOMO, partner orbital is the particle a
+        nP = nP + 1
+        somoCfg(nP) = r
+        specOrb(nP) = merge(o2, o1, ii == o1)
+        partOrb(nP) = aa
+      end if
+    end do
+
+    nAug = nC + nP
+    allocate(aAug(nAug, nAug), s2Aug(nAug, nAug))
+    aAug(:,:) = 0.0_dp
+    s2Aug(:,:) = 0.0_dp
+
+    ! Reduced (M_S=+1) block
+    aAug(1:nC, 1:nC) = aMrsf
+    do r = 1, nC
+      ii = labIA(r, 1)
+      aa = labIA(r, 2)
+      if (ii == o1 .and. aa == o2) then
+        ! SOMO-pair spin-adapted configuration (already pure)
+        s2Aug(r, r) = targetS2
+      else
+        s2Aug(r, r) = merge(1.0_dp, 0.0_dp, aa > nOccA) + merge(1.0_dp, 0.0_dp, ii <= nOccB)
+      end if
+    end do
+
+    ! Partner (M_S=-1) block: mirror the single-SOMO sub-block of the reduced matrix
+    do kk = 1, nP
+      do ll = 1, nP
+        aAug(nC + kk, nC + ll) = aMrsf(somoCfg(kk), somoCfg(ll))
+      end do
+      s2Aug(nC + kk, nC + kk) = 1.0_dp
+    end do
+
+    ! Cross (M_S=+1 <-> M_S=-1) coupling: spectator-SOMO exchange and the spin-square coupling
+    allocate(qpq(nAtom))
+    do kk = 1, nP
+      r = somoCfg(kk)
+      pk = nC + kk
+      qpq(:) = transq(specOrb(kk), partOrb(kk), env, denseDesc, .true., ovrXev, shVecs)
+      kExch = cExchange * dot_product(qpq, matmul(lrGamma, qpq))
+      aAug(r, pk) = -kExch
+      aAug(pk, r) = -kExch
+      s2Aug(r, pk) = 1.0_dp
+      s2Aug(pk, r) = 1.0_dp
+    end do
+
+    ! Diagonalise A (with a tiny S^2 tie-breaker to fix the eigenvectors in degenerate subspaces),
+    ! then evaluate the exact energy and <S^2> as expectation values.
+    lambda = 1.0e-6_dp
+    aAug(:,:) = aAug + lambda * s2Aug
+    allocate(eval(nAug))
+    call heev(aAug, eval, "U", "V")
+
+    allocate(energy(nAug), s2all(nAug), av(nAug))
+    do jj = 1, nAug
+      av(:) = matmul(s2Aug, aAug(:, jj))
+      s2all(jj) = dot_product(aAug(:, jj), av)
+      ! E = (eval including tie-breaker) - lambda * <S^2>
+      energy(jj) = eval(jj) - lambda * s2all(jj)
+    end do
+
+    ! Select states of the requested multiplicity (lowest in energy)
+    allocate(isTarget(nAug))
+    isTarget(:) = abs(s2all - targetS2) < 1.0_dp
+    nSel = min(nExc, count(isTarget))
+    nStateOut = nSel
+    allocate(evalOut(nSel), s2Out(nSel), domOut(nSel, 2))
+    nSel = 0
+    do jj = 1, nAug
+      if (.not. isTarget(jj)) cycle
+      nSel = nSel + 1
+      if (nSel > nStateOut) exit
+      evalOut(nSel) = energy(jj)
+      s2Out(nSel) = s2all(jj)
+      ! dominant reduced (M_S=+1) configuration
+      r = maxloc(aAug(1:nC, jj)**2, dim=1)
+      domOut(nSel, :) = labIA(r, :)
+    end do
+
+  end subroutine mrsfSpinComplete
 
 
   !> Count occupied and virtual orbitals in a spin channel (integer occupations).

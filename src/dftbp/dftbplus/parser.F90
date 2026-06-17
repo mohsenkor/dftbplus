@@ -5159,6 +5159,8 @@ contains
           call detailedError(child2, "Invalid MRSF Multiplicity '" // char(buffer) // &
               & "' (must be 'Singlet' or 'Triplet').")
         end select
+        ! Spin-complete augmentation of the single-SOMO blocks
+        call getChildValue(child, "SpinComplete", ctrl%lrespini%tSpinComplete, default=.false.)
       end if
 
     end if
@@ -5175,6 +5177,7 @@ contains
     lrespini%tSpinFlip = .true.
     lrespini%tMixedRef = .false.
     lrespini%tRohfRef = .true.
+    lrespini%tSpinComplete = .false.
     lrespini%sfMultiplicity = 1
     ! Spin-polarised reference: no singlet/triplet symmetry label
     lrespini%sym = ' '

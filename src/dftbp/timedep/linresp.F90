@@ -135,6 +135,9 @@ module dftbp_timedep_linresp
     !> Use a restricted-open-shell (shared MO) reference for the spin-flip response
     logical :: tRohfRef = .true.
 
+    !> Augment the single-SOMO blocks with their M_S=-1 partner configurations (spin-complete MRSF)
+    logical :: tSpinComplete = .false.
+
     !> Target multiplicity for MRSF states (1 = singlet, 3 = triplet)
     integer :: sfMultiplicity = 1
 
@@ -199,6 +202,7 @@ contains
     this%tSpinFlip = ini%tSpinFlip
     this%tMixedRef = ini%tMixedRef
     this%tRohfRef = ini%tRohfRef
+    this%tSpinComplete = ini%tSpinComplete
     this%sfMultiplicity = ini%sfMultiplicity
 
     this%writeExcitations = isIoProc

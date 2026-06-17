@@ -5729,6 +5729,7 @@ spin-flip (MRSF-TDDFT) implementation.
   \kw{Reference}       & s & & ROHF & \\
   \kw{MixedReference}  & l & & No & \\
   \kw{Multiplicity}    & s & \is{MixedReference} = Yes & Singlet & \\
+  \kw{SpinComplete}    & l & \is{MixedReference} = Yes & No & \\
 \end{ptable}
 
 \begin{description}
@@ -5759,6 +5760,14 @@ spin-flip (MRSF-TDDFT) implementation.
 \item[\is{Multiplicity}] Target multiplicity of the MRSF states, either
   \is{Singlet} or \is{Triplet}. Only used when \is{MixedReference} $=$
   \is{Yes}.
+
+\item[\is{SpinComplete}] If set to \is{Yes} (requires \is{Reference} $=$
+  \is{ROHF}), the single-SOMO blocks are augmented with their $M_S=-1$ partner
+  configurations, so that the closed $\to$ SOMO and SOMO $\to$ virtual states
+  become spin pure wherever the spectator-SOMO exchange is significant. States
+  are then selected by their $\langle \hat S^2\rangle$ for the requested
+  multiplicity. Residual contamination remains for configurations with a small
+  spectator exchange and for the closed $\to$ virtual block.
 
 \end{description}
 
