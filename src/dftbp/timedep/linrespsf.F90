@@ -42,9 +42,15 @@
 !! where K is the spectator-SOMO exchange; these commute, so the eigenvectors (|+> -+ |->)/sqrt(2)
 !! are the pure triplet (E-K, S^2=2) and singlet (E+K, S^2=0). States are then selected by <S^2> for
 !! the requested multiplicity. This purifies single-SOMO states wherever the spectator exchange K is
-!! significant; residual contamination remains for small-K configurations and for the closed->virtual
-!! (four-open-shell) block, whose complete spin adaptation is left for future work. The exact
-!! purification is confirmed for systems such as CH2 (most states reach <S^2> = 0 / 2 to ~1e-3).
+!! significant (confirmed for systems such as CH2, where most states reach <S^2> = 0 / 2 to ~1e-3);
+!! residual contamination remains for small-K configurations.
+!!
+!! The closed->virtual (four-open-shell) block is a fundamental limit of any singles/TDA treatment:
+!! its two singly-excited determinants span only the pure triplet plus a singlet/quintet mixture
+!! (the S^2 matrix in that subspace is exactly 2*I). The pure closed->virtual singlet requires the
+!! doubly-spin-flipped determinant - a double excitation - and is therefore not accessible here (nor
+!! in single-reference SF-TDDFT). Such configurations carry <S^2> ~ 2 and are excluded from singlet
+!! spectra by the multiplicity selection.
 !!
 !! <S^2> is evaluated exactly in the shared-orbital (ROHF) basis. For the plain spin-flip and the
 !! SOMO-pair-only MRSF, from

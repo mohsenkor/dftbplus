@@ -5767,7 +5767,10 @@ spin-flip (MRSF-TDDFT) implementation.
   become spin pure wherever the spectator-SOMO exchange is significant. States
   are then selected by their $\langle \hat S^2\rangle$ for the requested
   multiplicity. Residual contamination remains for configurations with a small
-  spectator exchange and for the closed $\to$ virtual block.
+  spectator exchange. The closed $\to$ virtual singlet is not accessible within
+  this singles (TDA) treatment -- it has intrinsic double-excitation character --
+  so such states carry $\langle \hat S^2\rangle \approx 2$ and are excluded from
+  singlet spectra by the multiplicity selection.
 
 \end{description}
 
