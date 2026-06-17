@@ -5726,6 +5726,7 @@ spin-flip (MRSF-TDDFT) implementation.
 \begin{ptable}
   \kw{NrOfExcitations} & i & & - & \\
   \kw{StateOfInterest} & i & & 0 & \\
+  \kw{Reference}       & s & & ROHF & \\
   \kw{MixedReference}  & l & & No & \\
   \kw{Multiplicity}    & s & \is{MixedReference} = Yes & Singlet & \\
 \end{ptable}
@@ -5739,18 +5740,30 @@ spin-flip (MRSF-TDDFT) implementation.
   the lowest spin-flip state as 1. If set to zero (default), the energies of
   all requested states are reported but no single state energy is returned.
 
+\item[\is{Reference}] Molecular orbitals used to build the spin-flip response.
+  \is{ROHF} (default) constructs a shared (restricted-open-shell) orbital set
+  from the spin-averaged converged Hamiltonian, so that the spin-square
+  $\langle \hat S^2\rangle$ reported for each state is exact;
+  \is{Unrestricted} uses the native collinear $\alpha/\beta$ orbitals.
+
 \item[\is{MixedReference}] If set to \is{Yes}, the mixed-reference
   spin-adaptation (MRSF-TDDFT) is applied to the spin-flip manifold. The two
   singly-occupied (SOMO) flip configurations are combined into a spin-adapted
-  configuration (singlet: antisymmetric, triplet: symmetric), which removes the
-  spin contamination of plain spin-flip TDDFT. This requires a high-spin
-  triplet reference (\is{UnpairedElectrons} $= 2$).
+  configuration (singlet: antisymmetric, triplet: symmetric). This purifies the
+  open-shell (SOMO $\to$ SOMO) states exactly (their $\langle \hat S^2\rangle$
+  becomes 0 or 2); single-SOMO configurations (closed $\to$ SOMO,
+  SOMO $\to$ virtual) retain a residual contamination at this level of
+  treatment. Requires a high-spin triplet reference
+  (\is{UnpairedElectrons} $= 2$).
 
 \item[\is{Multiplicity}] Target multiplicity of the MRSF states, either
   \is{Singlet} or \is{Triplet}. Only used when \is{MixedReference} $=$
   \is{Yes}.
 
 \end{description}
+
+The excitation energies and the spin-square $\langle \hat S^2\rangle$ of each
+state are written to the file \verb|SF.DAT|.
 
 \subsection{PP-RPA}
 \label{sec:dftbp.pprpa}

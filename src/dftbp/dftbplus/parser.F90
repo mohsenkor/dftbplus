@@ -5134,6 +5134,18 @@ contains
         end if
       end if
 
+      ! Reference orbitals for the spin-flip response
+      call getChildValue(child, "Reference", buffer, "ROHF", child=child2)
+      select case (tolower(unquote(char(buffer))))
+      case ("rohf")
+        ctrl%lrespini%tRohfRef = .true.
+      case ("unrestricted")
+        ctrl%lrespini%tRohfRef = .false.
+      case default
+        call detailedError(child2, "Invalid SpinFlip Reference '" // char(buffer) // &
+            & "' (must be 'ROHF' or 'Unrestricted').")
+      end select
+
       ! Mixed-reference spin-adaptation (MRSF-TDDFT)
       call getChildValue(child, "MixedReference", ctrl%lrespini%tMixedRef, default=.false.)
       if (ctrl%lrespini%tMixedRef) then
@@ -5162,6 +5174,7 @@ contains
 
     lrespini%tSpinFlip = .true.
     lrespini%tMixedRef = .false.
+    lrespini%tRohfRef = .true.
     lrespini%sfMultiplicity = 1
     ! Spin-polarised reference: no singlet/triplet symmetry label
     lrespini%sym = ' '

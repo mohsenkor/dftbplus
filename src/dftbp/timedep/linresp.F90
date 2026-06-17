@@ -132,6 +132,9 @@ module dftbp_timedep_linresp
     !> Use the mixed-reference spin-adaptation (MRSF-TDDFT) of the spin-flip manifold
     logical :: tMixedRef = .false.
 
+    !> Use a restricted-open-shell (shared MO) reference for the spin-flip response
+    logical :: tRohfRef = .true.
+
     !> Target multiplicity for MRSF states (1 = singlet, 3 = triplet)
     integer :: sfMultiplicity = 1
 
@@ -195,6 +198,7 @@ contains
     this%symmetry = ini%sym
     this%tSpinFlip = ini%tSpinFlip
     this%tMixedRef = ini%tMixedRef
+    this%tRohfRef = ini%tRohfRef
     this%sfMultiplicity = ini%sfMultiplicity
 
     this%writeExcitations = isIoProc

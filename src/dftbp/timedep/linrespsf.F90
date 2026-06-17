@@ -7,30 +7,42 @@
 
 #:include 'common.fypp'
 
-!> Collinear spin-flip linear-response excitations within the Tamm-Dancoff approximation
-!! (SF-TDDFT) for range-separated (LC-)DFTB.
+!> Collinear spin-flip (SF-TDDFT) and mixed-reference spin-flip (MRSF-TDDFT) excitations within the
+!! Tamm-Dancoff approximation for range-separated (LC-)DFTB.
 !!
 !! On a spin-polarised, high-spin (M_S = +1) reference, the spin-flip manifold consists of
-!! alpha-occupied -> beta-virtual single excitations. Because the spin-flip transition density
-!! is off-diagonal in spin, the Hartree (gamma) coupling vanishes and the off-diagonal coupling is
-!! carried entirely by the long-range exact (Hartree-Fock) exchange of LC-DFTB, in line with the
-!! "exchange-only" structure of spin-flip / mixed-reference TDDFT.
+!! alpha-occupied -> beta-virtual single excitations. Because the spin-flip transition density is
+!! off-diagonal in spin, the Hartree (gamma) coupling vanishes and the off-diagonal coupling is
+!! carried entirely by the long-range exact (Hartree-Fock) exchange of LC-DFTB ("exchange-only"
+!! structure of spin-flip / mixed-reference TDDFT). The TDA spin-flip A-matrix is
 !!
-!! TDA A-matrix:
-!!   A_{ia,jb} = delta_ij delta_ab (eps^beta_a - eps^alpha_i)
-!!                 - sum_{AB} q^{alpha,ij}_A gamma^LR_{AB} q^{beta,ab}_B
+!!   A_{ia,jb} = delta_ij F^beta_ab - delta_ab F^alpha_ij
+!!                 - sum_{AB} q^{ij}_A gamma^LR_{AB} q^{ab}_B .
+!!
+!! Two references are supported:
+!!   * ROHF (default): a shared (restricted-open-shell) molecular orbital set is constructed from the
+!!     spin-averaged converged Hamiltonian; alpha and beta share spatial orbitals and the
+!!     spin-resolved Fock matrices F^alpha/F^beta enter the orbital-Hamiltonian part in full. This is
+!!     the basis required for genuine MRSF and gives an exact spin-flip <S^2>.
+!!   * Unrestricted: the native collinear (UHF-like) alpha/beta orbitals are used; F^alpha/F^beta are
+!!     diagonal (the canonical eigenvalues) and the SOMO pair is identified by index.
 !!
 !! With MixedReference = Yes the mixed-reference spin-adaptation (MRSF-TDDFT) is applied: the two
 !! singly-occupied (SOMO) flip configurations O1->O1 and O2->O2 are combined with +-1/sqrt(2)
-!! (singlet: antisymmetric, triplet: symmetric) and the cross SOMO configurations are removed,
-!! which removes the spin contamination of plain spin-flip TDDFT. In the Tamm-Dancoff
-!! approximation this is the congruence A_MRSF = T^T A_SF T of the spin-flip operator with the
-!! spin-adaptation transformation T (cf. Lee et al., J. Chem. Phys. 149, 104101 (2018)).
+!! (singlet: antisymmetric, triplet: symmetric) and the cross SOMO configurations are removed. In
+!! TDA this is the congruence A_MRSF = T^T A_SF T (cf. Lee et al., J. Chem. Phys. 149, 104101
+!! (2018)).
 !!
-!! Note: currently restricted to the serial (non-MPI) build and integer occupations. Because the
-!! collinear DFTB reference yields separate alpha/beta orbitals (UHF-like), the SOMO pair is
-!! identified by index (U-MRSF flavour); rigorous maximal-overlap alpha/beta alignment is a
-!! possible later refinement.
+!! Scope of the spin-adaptation: this purifies the open-shell (SOMO -> SOMO) states exactly, as
+!! confirmed by the <S^2> diagnostic (singlet -> 0, triplet -> 2). Single-SOMO configurations
+!! (closed -> SOMO and SOMO -> virtual) retain a residual <S^2> ~ 1: their full purification
+!! requires the mixed-reference fractional-occupation (SOMO occupation 1/2) reduced density matrix,
+!! which modifies those couplings and is not yet included here.
+!!
+!! <S^2> is evaluated exactly in the shared-orbital (ROHF) basis from
+!!   <S^2> = (X_{O1->O1} + X_{O2->O2})^2 + sum_ia X_ia^2 ([a virtual] + [i closed]).
+!!
+!! Note: currently restricted to the serial (non-MPI) build and integer occupations.
 module dftbp_timedep_linrespsf
   use dftbp_common_accuracy, only : dp, elecTolMax
   use dftbp_common_constants, only : Hartree__eV, cExchange
@@ -40,8 +52,8 @@ module dftbp_timedep_linrespsf
   use dftbp_dftb_hybridxc, only : THybridXcFunc
   use dftbp_io_message, only : error
   use dftbp_io_taggedoutput, only : TTaggedWriter, tagLabels
-  use dftbp_math_blasroutines, only : symm
-  use dftbp_math_eigensolver, only : heev
+  use dftbp_math_blasroutines, only : symm, gemm
+  use dftbp_math_eigensolver, only : heev, hegv
   use dftbp_timedep_linresptypes, only : TLinResp
   use dftbp_timedep_transcharges, only : transq
   use dftbp_type_commontypes, only : TOrbitals
@@ -56,7 +68,7 @@ module dftbp_timedep_linrespsf
 
 contains
 
-  !> Calculate collinear spin-flip excitation energies (TDA, LC-DFTB exchange kernel).
+  !> Calculate collinear spin-flip / mixed-reference spin-flip excitation energies (TDA, LC-DFTB).
   subroutine LinRespSF_calcExcitations(this, env, denseDesc, grndEigVecs, grndEigVal, SSqrReal,&
       & filling, orb, hybridXc, fdTagged, taggedWriter, excEnergy, allExcEnergies)
 
@@ -100,11 +112,13 @@ contains
     real(dp), intent(inout), allocatable :: allExcEnergies(:)
 
     integer :: nOrb, nSpin, nAtom, nOccA, nOccB, nVirA, nVirB, nSF, nMat
-    integer :: ii, jj, aa, bb, ap, bp, iT, jT, nState
-    real(dp), allocatable :: ovrXev(:,:,:), lrGamma(:,:)
-    real(dp), allocatable :: qOO(:,:,:), qVV(:,:,:), gqVV(:,:,:)
-    real(dp), allocatable :: aMat(:,:), aMrsf(:,:), eval(:), wia(:)
-    integer, allocatable :: getIA(:,:), labIA(:,:)
+    integer :: ii, jj, aa, bb, iT, nState, iState
+    real(dp), allocatable :: ovrXev(:,:,:), shVecs(:,:,:), lrGamma(:,:)
+    real(dp), allocatable :: qOO(:,:,:), qVV(:,:,:)
+    real(dp), allocatable :: faOcc(:,:), fbVir(:,:), faFull(:,:), fbFull(:,:)
+    real(dp), allocatable :: aMat(:,:), aMrsf(:,:), tMat(:,:), eval(:)
+    real(dp), allocatable :: s2(:), xExp(:)
+    integer, allocatable :: getIA(:,:), labIA(:,:), domIA(:,:)
 
   #:if WITH_SCALAPACK
     call error("Spin-flip linear response is not yet implemented for MPI/ScaLAPACK builds.")
@@ -131,50 +145,145 @@ contains
     if (nSF < 1) then
       call error("No spin-flip (alpha-occupied -> beta-virtual) transitions available.")
     end if
-    if (this%nExc > nSF) then
-      this%nExc = nSF
-    end if
-
-    ! Overlap times eigenvectors: ovrXev(:,:,s) = S c_s
-    allocate(ovrXev(nOrb, nOrb, nSpin))
-    do ii = 1, nSpin
-      call symm(ovrXev(:,:,ii), "L", SSqrReal, grndEigVecs(:,:,ii))
-    end do
 
     ! Long-range exchange gamma in AO (atom) basis
     allocate(lrGamma(nAtom, nAtom))
     call hybridXc%getCamGammaCluster(lrGamma)
 
-    ! Enumerate transitions and single-particle energy differences
+    ! Enumerate transitions
     allocate(getIA(nSF, 2))
-    allocate(wia(nSF))
     iT = 0
     do ii = 1, nOccA
       do aa = nOccB + 1, nOrb
         iT = iT + 1
         getIA(iT, :) = [ii, aa]
-        wia(iT) = grndEigVal(aa, 2) - grndEigVal(ii, 1)
       end do
     end do
 
-    ! Same-spin transition charges:
-    !   qOO(:,i,j) alpha occ-occ,  qVV(:,a',b') beta vir-vir (a' = a - nOccB)
-    allocate(qOO(nAtom, nOccA, nOccA))
-    do ii = 1, nOccA
-      do jj = 1, ii
-        qOO(:, ii, jj) = transq(ii, jj, env, denseDesc, .true., ovrXev, grndEigVecs)
-        qOO(:, jj, ii) = qOO(:, ii, jj)
-      end do
-    end do
-    allocate(qVV(nAtom, nVirB, nVirB))
-    do aa = 1, nVirB
-      do bb = 1, aa
-        qVV(:, aa, bb) = transq(nOccB + aa, nOccB + bb, env, denseDesc, .false., ovrXev, grndEigVecs)
-        qVV(:, bb, aa) = qVV(:, aa, bb)
-      end do
-    end do
+    allocate(faOcc(nOccA, nOccA), fbVir(nVirB, nVirB))
+    allocate(qOO(nAtom, nOccA, nOccA), qVV(nAtom, nVirB, nVirB))
 
-    ! Pre-contract gamma with the beta vir-vir charges: gqVV(:,a',b') = gamma^LR . qVV(:,a',b')
+    if (this%tRohfRef) then
+      ! Restricted-open-shell (shared MO) reference: spin-resolved Fock in a single MO set
+      allocate(shVecs(nOrb, nOrb, 1), ovrXev(nOrb, nOrb, 1))
+      allocate(faFull(nOrb, nOrb), fbFull(nOrb, nOrb))
+      call buildRohfReference(grndEigVecs, grndEigVal, SSqrReal, shVecs, faFull, fbFull)
+      call symm(ovrXev(:,:,1), "L", SSqrReal, shVecs(:,:,1))
+      ! occupied/virtual Fock blocks
+      faOcc(:,:) = faFull(1:nOccA, 1:nOccA)
+      fbVir(:,:) = fbFull(nOccB+1:nOrb, nOccB+1:nOrb)
+      ! shared-orbital transition charges (alpha occ-occ and beta vir-vir use the same MO set)
+      do ii = 1, nOccA
+        do jj = 1, ii
+          qOO(:, ii, jj) = transq(ii, jj, env, denseDesc, .true., ovrXev, shVecs)
+          qOO(:, jj, ii) = qOO(:, ii, jj)
+        end do
+      end do
+      do aa = 1, nVirB
+        do bb = 1, aa
+          qVV(:, aa, bb) = transq(nOccB+aa, nOccB+bb, env, denseDesc, .true., ovrXev, shVecs)
+          qVV(:, bb, aa) = qVV(:, aa, bb)
+        end do
+      end do
+    else
+      ! Native collinear (UHF-like) reference: diagonal Fock = canonical eigenvalues
+      allocate(ovrXev(nOrb, nOrb, nSpin))
+      do ii = 1, nSpin
+        call symm(ovrXev(:,:,ii), "L", SSqrReal, grndEigVecs(:,:,ii))
+      end do
+      faOcc(:,:) = 0.0_dp
+      do ii = 1, nOccA
+        faOcc(ii, ii) = grndEigVal(ii, 1)
+      end do
+      fbVir(:,:) = 0.0_dp
+      do aa = 1, nVirB
+        fbVir(aa, aa) = grndEigVal(nOccB+aa, 2)
+      end do
+      do ii = 1, nOccA
+        do jj = 1, ii
+          qOO(:, ii, jj) = transq(ii, jj, env, denseDesc, .true., ovrXev, grndEigVecs)
+          qOO(:, jj, ii) = qOO(:, ii, jj)
+        end do
+      end do
+      do aa = 1, nVirB
+        do bb = 1, aa
+          qVV(:, aa, bb) = transq(nOccB+aa, nOccB+bb, env, denseDesc, .false., ovrXev, grndEigVecs)
+          qVV(:, bb, aa) = qVV(:, aa, bb)
+        end do
+      end do
+    end if
+
+    ! Assemble the spin-flip TDA A-matrix
+    call buildSpinFlipA(getIA, nOccB, nVirB, faOcc, fbVir, qOO, qVV, lrGamma, aMat)
+
+    if (this%tMixedRef) then
+      ! Mixed-reference (MRSF) spin-adaptation: A_MRSF = T^T A_SF T
+      call mrsfReduce(aMat, getIA, nOccA, nOccB, nVirB, this%sfMultiplicity, aMrsf, labIA, tMat)
+      nMat = size(aMrsf, dim=1)
+      allocate(eval(nMat))
+      call heev(aMrsf, eval, "U", "V")
+      nState = min(this%nExc, nMat)
+      ! spin-square: expand each compressed eigenvector back to the full SF basis
+      allocate(s2(nState), domIA(nState, 2), xExp(nSF))
+      do iState = 1, nState
+        xExp(:) = matmul(tMat, aMrsf(:, iState))
+        s2(iState) = sfSpinSquare(xExp, getIA, nOccA, nOccB)
+        domIA(iState, :) = labIA(maxloc(aMrsf(:, iState)**2, dim=1), :)
+      end do
+      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, this%sfMultiplicity)
+    else
+      ! Plain (spin-contaminated) spin-flip TDDFT
+      allocate(eval(nSF))
+      call heev(aMat, eval, "U", "V")
+      nState = min(this%nExc, nSF)
+      allocate(s2(nState), domIA(nState, 2))
+      do iState = 1, nState
+        s2(iState) = sfSpinSquare(aMat(:, iState), getIA, nOccA, nOccB)
+        domIA(iState, :) = getIA(maxloc(aMat(:, iState)**2, dim=1), :)
+      end do
+      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, 0)
+    end if
+
+    allocate(allExcEnergies(nState))
+    allExcEnergies(:) = eval(1:nState)
+    if (this%nStat > 0 .and. this%nStat <= nState) then
+      excEnergy = eval(this%nStat)
+    else
+      excEnergy = 0.0_dp
+    end if
+
+  end subroutine LinRespSF_calcExcitations
+
+
+  !> Build the symmetric spin-flip TDA A-matrix in the expanded (alpha-occ -> beta-vir) basis.
+  subroutine buildSpinFlipA(getIA, nOccB, nVirB, faOcc, fbVir, qOO, qVV, lrGamma, aMat)
+
+    !> Transition index map [i, a] (orbital numbers)
+    integer, intent(in) :: getIA(:,:)
+
+    !> Number of beta-occupied orbitals and beta-virtuals
+    integer, intent(in) :: nOccB, nVirB
+
+    !> Alpha occ-occ and beta vir-vir Fock blocks (in the working MO basis)
+    real(dp), intent(in) :: faOcc(:,:), fbVir(:,:)
+
+    !> Same-spin occ-occ and vir-vir transition charges
+    real(dp), intent(in) :: qOO(:,:,:), qVV(:,:,:)
+
+    !> Long-range exchange gamma (nAtom, nAtom)
+    real(dp), intent(in) :: lrGamma(:,:)
+
+    !> Resulting A-matrix
+    real(dp), allocatable, intent(out) :: aMat(:,:)
+
+    integer :: nSF, iT, jT, ii, jj, aa, bb, ap, bp
+    real(dp), allocatable :: gqVV(:,:,:)
+    integer :: nAtom
+
+    nSF = size(getIA, dim=1)
+    nAtom = size(lrGamma, dim=1)
+
+    ! Pre-contract gamma with the vir-vir charges
     allocate(gqVV(nAtom, nVirB, nVirB))
     do aa = 1, nVirB
       do bb = 1, nVirB
@@ -182,7 +291,6 @@ contains
       end do
     end do
 
-    ! Build the symmetric TDA spin-flip A-matrix
     allocate(aMat(nSF, nSF))
     aMat(:,:) = 0.0_dp
     do iT = 1, nSF
@@ -193,58 +301,127 @@ contains
         jj = getIA(jT, 1)
         bb = getIA(jT, 2)
         bp = bb - nOccB
-        ! exchange-only off-diagonal coupling: - q^{ij} . gamma^LR . q^{ab}
+        ! exchange-only coupling: - q^{ij} . gamma^LR . q^{ab}
         aMat(iT, jT) = -cExchange * dot_product(qOO(:, ii, jj), gqVV(:, ap, bp))
+        ! orbital-Hamiltonian part: delta_ij F^beta_ab - delta_ab F^alpha_ij
+        if (ii == jj) aMat(iT, jT) = aMat(iT, jT) + fbVir(ap, bp)
+        if (aa == bb) aMat(iT, jT) = aMat(iT, jT) - faOcc(ii, jj)
         aMat(jT, iT) = aMat(iT, jT)
       end do
-      ! single-particle (orbital energy difference) on the diagonal
-      aMat(iT, iT) = aMat(iT, iT) + wia(iT)
     end do
 
-    if (this%tMixedRef) then
-      ! Mixed-reference (MRSF) spin-adaptation of the singly-occupied (SOMO) flip configurations.
-      ! The MRSF Tamm-Dancoff problem is the congruence A_MRSF = T^T A_SF T, where T combines the
-      ! O1->O1 and O2->O2 configurations with +-1/sqrt(2) (singlet: subtract, triplet: add) and the
-      ! cross SOMO configurations are removed/zeroed (cf. Lee et al., JCP 149, 104101 (2018)).
-      call mrsfReduce(aMat, getIA, nOccA, nOccB, nVirB, this%sfMultiplicity, aMrsf, labIA)
-      nMat = size(aMrsf, dim=1)
-      allocate(eval(nMat))
-      call heev(aMrsf, eval, "U", "V")
-      nState = min(this%nExc, nMat)
-      allocate(allExcEnergies(nState))
-      allExcEnergies(:) = eval(1:nState)
-      if (this%nStat > 0 .and. this%nStat <= nMat) then
-        excEnergy = eval(this%nStat)
-      else
-        excEnergy = 0.0_dp
-      end if
-      call writeSFResults(eval, aMrsf, labIA, nState, fdTagged, taggedWriter, this%sfMultiplicity)
-    else
-      ! Plain (spin-contaminated) spin-flip TDDFT.
-      ! Eigenvalues ascending; negative roots are physical for spin-flip.
-      allocate(eval(nSF))
-      call heev(aMat, eval, "U", "V")
-      nState = min(this%nExc, nSF)
-      allocate(allExcEnergies(nState))
-      allExcEnergies(:) = eval(1:nState)
-      if (this%nStat > 0 .and. this%nStat <= nSF) then
-        excEnergy = eval(this%nStat)
-      else
-        excEnergy = 0.0_dp
-      end if
-      call writeSFResults(eval, aMat, getIA, nState, fdTagged, taggedWriter, 0)
-    end if
+  end subroutine buildSpinFlipA
 
-  end subroutine LinRespSF_calcExcitations
+
+  !> Construct a restricted-open-shell (shared) MO set and the spin-resolved Fock matrices in it.
+  !!
+  !! The shared orbitals diagonalise the spin-averaged converged Hamiltonian H = (H^a + H^b)/2,
+  !! reconstructed from the (S-orthonormal) collinear orbitals as H^s = S C^s E^s (C^s)^T S. The
+  !! spin-resolved Fock matrices are then F^s = O^s diag(E^s) (O^s)^T with O^s = C^T S C^s.
+  subroutine buildRohfReference(eigVecs, eigVal, SSqr, shVecs, faFull, fbFull)
+
+    !> Collinear eigenvectors (nOrb, nOrb, 2)
+    real(dp), intent(in) :: eigVecs(:,:,:)
+
+    !> Collinear eigenvalues (nOrb, 2)
+    real(dp), intent(in) :: eigVal(:,:)
+
+    !> Overlap matrix (nOrb, nOrb)
+    real(dp), intent(in) :: SSqr(:,:)
+
+    !> Shared MO coefficients on exit (nOrb, nOrb, 1)
+    real(dp), intent(out) :: shVecs(:,:,:)
+
+    !> Alpha and beta Fock matrices in the shared MO basis (nOrb, nOrb)
+    real(dp), intent(out) :: faFull(:,:), fbFull(:,:)
+
+    integer :: nOrb, spin, pp
+    real(dp), allocatable :: pMat(:,:), hCharge(:,:), sCopy(:,:), tmp(:,:)
+    real(dp), allocatable :: wScaled(:,:), oMat(:,:), sC(:,:), eR(:)
+
+    nOrb = size(SSqr, dim=1)
+    allocate(pMat(nOrb,nOrb), hCharge(nOrb,nOrb), sCopy(nOrb,nOrb), tmp(nOrb,nOrb))
+    allocate(wScaled(nOrb,nOrb), oMat(nOrb,nOrb), sC(nOrb,nOrb), eR(nOrb))
+
+    ! P = 0.5 (C^a E^a C^a^T + C^b E^b C^b^T)
+    pMat(:,:) = 0.0_dp
+    do spin = 1, 2
+      do pp = 1, nOrb
+        wScaled(:, pp) = eigVecs(:, pp, spin) * eigVal(pp, spin)
+      end do
+      call gemm(pMat, wScaled, eigVecs(:,:,spin), alpha=0.5_dp, beta=1.0_dp, transB="T")
+    end do
+
+    ! H_charge = S P S
+    call gemm(tmp, SSqr, pMat)
+    call gemm(hCharge, tmp, SSqr)
+
+    ! Solve H_charge C = S C E  ->  shared MOs (S-orthonormal, ascending energy)
+    sCopy(:,:) = SSqr
+    call hegv(hCharge, sCopy, eR, "U", "V")
+    shVecs(:,:,1) = hCharge
+
+    ! F^s = O^s diag(E^s) (O^s)^T,   O^s = C^T S C^s
+    do spin = 1, 2
+      call gemm(sC, SSqr, eigVecs(:,:,spin))
+      call gemm(oMat, shVecs(:,:,1), sC, transA="T")
+      do pp = 1, nOrb
+        wScaled(:, pp) = oMat(:, pp) * eigVal(pp, spin)
+      end do
+      if (spin == 1) then
+        call gemm(faFull, wScaled, oMat, transB="T")
+      else
+        call gemm(fbFull, wScaled, oMat, transB="T")
+      end if
+    end do
+
+  end subroutine buildRohfReference
+
+
+  !> Spin-square <S^2> of a spin-flip state from its expanded amplitude vector.
+  !!
+  !! Exact in a shared-orbital (ROHF) basis:
+  !!   <S^2> = (X_{O1->O1} + X_{O2->O2})^2 + sum_ia X_ia^2 ( [a virtual] + [i closed] ).
+  function sfSpinSquare(xExp, getIA, nOccA, nOccB) result(s2)
+
+    !> Expanded spin-flip amplitudes (normalised), one per transition
+    real(dp), intent(in) :: xExp(:)
+
+    !> Transition index map [i, a] (orbital numbers)
+    integer, intent(in) :: getIA(:,:)
+
+    !> Number of alpha-occupied and beta-occupied orbitals
+    integer, intent(in) :: nOccA, nOccB
+
+    real(dp) :: s2
+
+    integer :: iT, ii, aa, sia
+    real(dp) :: openSum
+
+    s2 = 0.0_dp
+    openSum = 0.0_dp
+    do iT = 1, size(xExp)
+      ii = getIA(iT, 1)
+      aa = getIA(iT, 2)
+      sia = 0
+      if (aa > nOccA) sia = sia + 1   ! a is a true virtual (not a SOMO)
+      if (ii <= nOccB) sia = sia + 1  ! i is a closed (doubly occupied) orbital
+      s2 = s2 + xExp(iT)**2 * real(sia, dp)
+      ! i == a (same orbital index) occurs only for the SOMO-diagonal flips O1->O1, O2->O2
+      if (ii == aa) openSum = openSum + xExp(iT)
+    end do
+    s2 = s2 + openSum**2
+
+  end function sfSpinSquare
 
 
   !> Reduce the spin-flip A-matrix to the mixed-reference (MRSF) spin-adapted A-matrix.
   !!
-  !! Builds the spin-adaptation transformation T (with orthonormal columns) that combines the two
-  !! singly-occupied (SOMO) flip configurations O1->O1 and O2->O2, then returns A_MRSF = T^T A_SF T.
-  subroutine mrsfReduce(aSF, getIA, nOccA, nOccB, nVirB, mult, aMrsf, labIA)
+  !! Builds the spin-adaptation transformation T (orthonormal columns) that combines the two
+  !! singly-occupied (SOMO) flip configurations O1->O1 and O2->O2, and returns A_MRSF = T^T A_SF T.
+  subroutine mrsfReduce(aSF, getIA, nOccA, nOccB, nVirB, mult, aMrsf, labIA, tMat)
 
-    !> Spin-flip A-matrix in the expanded (alpha-occ -> beta-vir) basis
+    !> Spin-flip A-matrix in the expanded basis
     real(dp), intent(in) :: aSF(:,:)
 
     !> Transition index map for the expanded basis
@@ -253,18 +430,20 @@ contains
     !> Number of alpha-occupied / beta-occupied orbitals and beta-virtuals
     integer, intent(in) :: nOccA, nOccB, nVirB
 
-    !> Target multiplicity of the MRSF states (1 = singlet, 3 = triplet)
+    !> Target multiplicity (1 = singlet, 3 = triplet)
     integer, intent(in) :: mult
 
     !> Reduced MRSF A-matrix
     real(dp), allocatable, intent(out) :: aMrsf(:,:)
 
-    !> Representative transition labels for the reduced (active) configurations
+    !> Representative transition labels for the reduced configurations
     integer, allocatable, intent(out) :: labIA(:,:)
+
+    !> Spin-adaptation transformation (expanded x compressed)
+    real(dp), allocatable, intent(out) :: tMat(:,:)
 
     integer :: nSF, o1, o2, ijlr1, ijlr2, ijg, ijd, nRem, nC, ee, col
     logical, allocatable :: active(:)
-    real(dp), allocatable :: tMat(:,:)
     real(dp) :: isq2, signLr2
 
     if (nOccA /= nOccB + 2) then
@@ -277,12 +456,9 @@ contains
 
     nSF = size(aSF, dim=1)
     isq2 = 1.0_dp / sqrt(2.0_dp)
-
-    ! Singly-occupied orbitals O1 = HOMO-1, O2 = HOMO of the alpha channel
     o1 = nOccB + 1
     o2 = nOccB + 2
 
-    ! Expanded compound indices iT = (i-1)*nVirB + (a-nOccB) for the four SOMO-flip configurations
     ijlr1 = (o1 - 1) * nVirB + (o1 - nOccB)
     ijlr2 = (o2 - 1) * nVirB + (o2 - nOccB)
     ijg = (o2 - 1) * nVirB + (o1 - nOccB)
@@ -291,12 +467,10 @@ contains
     allocate(active(nSF))
     active(:) = .true.
     if (mult == 1) then
-      ! Singlet: O1->O1 and O2->O2 combine antisymmetrically; cross configurations are retained
       active(ijlr2) = .false.
       nRem = 1
       signLr2 = -isq2
     else
-      ! Triplet: O1->O1 and O2->O2 combine symmetrically; cross configurations are removed
       active(ijlr2) = .false.
       active(ijg) = .false.
       active(ijd) = .false.
@@ -313,7 +487,6 @@ contains
       if (.not. active(ee)) cycle
       col = col + 1
       if (ee == ijlr1) then
-        ! Spin-adapted SOMO-pair configuration
         tMat(ijlr1, col) = isq2
         tMat(ijlr2, col) = signLr2
         labIA(col, :) = [o1, o2]
@@ -325,7 +498,6 @@ contains
 
     allocate(aMrsf(nC, nC))
     aMrsf(:,:) = matmul(transpose(tMat), matmul(aSF, tMat))
-    ! Enforce exact symmetry (guard against round-off)
     aMrsf(:,:) = 0.5_dp * (aMrsf + transpose(aMrsf))
 
   end subroutine mrsfReduce
@@ -363,20 +535,20 @@ contains
   end subroutine countOccVir
 
 
-  !> Write spin-flip excitation energies, dominant transition character and tagged output.
-  subroutine writeSFResults(eval, eigVec, getIA, nState, fdTagged, taggedWriter, mult)
+  !> Write spin-flip excitation energies, <S^2> and tagged output.
+  subroutine writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, mult)
 
-    !> Excitation energies (all roots, ascending)
+    !> Excitation energies (ascending)
     real(dp), intent(in) :: eval(:)
 
-    !> Excitation eigenvectors (columns)
-    real(dp), intent(in) :: eigVec(:,:)
-
-    !> Transition index map
-    integer, intent(in) :: getIA(:,:)
+    !> Dominant transition label [i, a] per state
+    integer, intent(in) :: domIA(:,:)
 
     !> Number of states to report
     integer, intent(in) :: nState
+
+    !> Spin-square of each reported state
+    real(dp), intent(in) :: s2(:)
 
     !> File id for tagged output
     type(TFileDescr), intent(in) :: fdTagged
@@ -388,8 +560,7 @@ contains
     integer, intent(in) :: mult
 
     type(TFileDescr) :: fdSF
-    integer :: iState, iT, iMax
-    real(dp) :: wMax
+    integer :: iState
     character(40) :: methodStr
 
     select case (mult)
@@ -402,33 +573,26 @@ contains
     end select
 
     write(stdOut, "(/,A)") " "//trim(methodStr)//" excitations:"
-    write(stdOut, "(2X,A6,2X,A14,2X,A14,2X,A20)") "State", "energy (au)", "energy (eV)",&
-        & "dominant i->a"
+    write(stdOut, "(2X,A6,2X,A14,2X,A12,2X,A8,2X,A12)") "State", "energy (eV)", "omega (au)",&
+        & "<S^2>", "dominant i->a"
 
     call openFile(fdSF, sfExcitationsOut, mode="w")
     write(fdSF%unit, "(A)") "# "//trim(methodStr)//" excitations"
-    write(fdSF%unit, "(A)") "# state   energy(eV)        omega(au)     dominant transition"
+    write(fdSF%unit, "(A)") "# state    energy(eV)         omega(au)        <S^2>     dominant"
 
     do iState = 1, nState
-      ! dominant single-particle character
-      iMax = 1
-      wMax = 0.0_dp
-      do iT = 1, size(eigVec, dim=1)
-        if (eigVec(iT, iState)**2 > wMax) then
-          wMax = eigVec(iT, iState)**2
-          iMax = iT
-        end if
-      end do
-      write(stdOut, "(2X,I6,2X,F14.6,2X,F14.6,2X,I6,A,I6)") iState, eval(iState),&
-          & eval(iState) * Hartree__eV, getIA(iMax, 1), " ->", getIA(iMax, 2)
-      write(fdSF%unit, "(I6,2X,F16.8,2X,F16.8,2X,I6,A,I6,A,F6.3,A)") iState,&
-          & eval(iState) * Hartree__eV, eval(iState), getIA(iMax, 1), " ->", getIA(iMax, 2),&
-          & " (w=", wMax, ")"
+      write(stdOut, "(2X,I6,2X,F14.6,2X,F12.6,2X,F8.4,2X,I5,A,I5)") iState,&
+          & eval(iState) * Hartree__eV, eval(iState), s2(iState),&
+          & domIA(iState, 1), " ->", domIA(iState, 2)
+      write(fdSF%unit, "(I6,2X,F16.8,2X,F16.8,2X,F10.5,2X,I5,A,I5)") iState,&
+          & eval(iState) * Hartree__eV, eval(iState), s2(iState),&
+          & domIA(iState, 1), " ->", domIA(iState, 2)
     end do
     call closeFile(fdSF)
 
     if (fdTagged%isConnected()) then
       call taggedWriter%write(fdTagged%unit, tagLabels%excEgy, eval(1:nState))
+      call taggedWriter%write(fdTagged%unit, "exc_spinsquared", s2(1:nState))
     end if
 
   end subroutine writeSFResults

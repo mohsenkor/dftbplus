@@ -21,8 +21,12 @@ Added
   enabled by ``MixedReference = Yes`` (with ``Multiplicity = Singlet`` or
   ``Triplet``) in the ``ExcitedState/SpinFlip`` block. The two singly-occupied
   orbital flip configurations are spin-adapted (1/sqrt(2) combinations) on a
-  high-spin triplet reference, removing the spin contamination of plain
-  spin-flip TDDFT.
+  high-spin triplet reference, purifying the open-shell (SOMO -> SOMO) states.
+
+- Restricted-open-shell (shared MO) reference for the spin-flip response
+  (``Reference = ROHF``, default), and reporting of the spin-square <S^2> of
+  each spin-flip / MRSF state (exact in the ROHF basis) to ``SF.DAT`` and the
+  tagged output.
 
 - MPI-parallelization of Waveplot
 
