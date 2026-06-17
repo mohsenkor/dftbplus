@@ -11,6 +11,14 @@ Unreleased
 Added
 -----
 
+- Collinear spin-flip excited states (SF-TDDFT) within the Tamm-Dancoff
+  approximation for range-separated (LC-)DFTB, requested via the
+  ``ExcitedState/SpinFlip`` block. The spin-flip (alpha-occupied ->
+  beta-virtual) manifold is solved on a high-spin (M_S = +1) reference, with
+  the off-diagonal coupling carried by the long-range exact exchange. This is
+  the first stage towards a mixed-reference spin-flip (MRSF-TDDFT)
+  implementation.
+
 - MPI-parallelization of Waveplot
 
 - Generalization of mixers to also handle complex density matrices

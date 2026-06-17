@@ -3423,7 +3423,9 @@ contains
       #:endif
     endif
 
-    if(this%isLinResp) then
+    if(this%isLinResp .and. input%ctrl%lrespini%tSpinFlip) then
+      write(stdOut, "(A,':',T30,A)") "Excitation solver", "Spin-flip (TDA, dense)"
+    else if(this%isLinResp) then
       select case(input%ctrl%lrespini%iLinRespSolver)
       case (linrespSolverTypes%None)
         call error("Casida solver has not been selected")
@@ -6064,6 +6066,24 @@ contains
       case default
         call error("Unknown excitation type requested")
       end select
+    end if
+
+    ! Collinear spin-flip excitations (SF-TDDFT) use a dedicated dense diagonaliser and require a
+    ! spin-polarised, range-separated reference to provide the long-range exchange kernel.
+    if (input%ctrl%lrespini%tSpinFlip) then
+      if (.not. isHybLinResp) then
+        call error("Spin-flip excitations require a range-separated (LC-)DFTB Hamiltonian to&
+            & provide the long-range exchange kernel (specify a Hybrid block).")
+      end if
+      if (nSpin /= 2) then
+        call error("Spin-flip excitations require collinear spin polarisation&
+            & (SpinPolarisation = Colinear).")
+      end if
+      if (tPeriodic) then
+        call error("Spin-flip excitations for periodic geometries are currently unavailable.")
+      end if
+      ! Remaining checks below are specific to the RPA-based solvers and do not apply here.
+      return
     end if
 
     if (isHybLinResp) then

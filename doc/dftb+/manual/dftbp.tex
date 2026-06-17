@@ -5462,6 +5462,7 @@ This block collects some options to calculate excited states.
 \begin{ptable}
   \kw{Casida} & p & SCC = Yes & \cb & \\
   \kw{PP-RPA} & p & SCC = Yes & \cb & \\
+  \kw{SpinFlip} & p & SCC = Yes & \cb & \pref{sec:dftbp.SpinFlip}\\
 \end{ptable}
 
 \subsection{Casida}
@@ -5699,6 +5700,44 @@ recommended to first approach the CI with a larger value of
 and then restart the optimization with successively smaller values of
 \is{EnergyShift}. Note that specifying \is{StateOfInterest} leads only
 to computation of the corresponding energy, but not the force.
+
+\subsection{SpinFlip}
+\label{sec:dftbp.SpinFlip}
+
+This tag requests the calculation of collinear spin-flip excited states
+(SF-TDDFT) within the Tamm-Dancoff approximation. The spin-flip manifold
+consists of alpha-occupied $\rightarrow$ beta-virtual single excitations on a
+spin-polarised, high-spin ($M_S = +1$) reference. Because the spin-flip
+transition density is off-diagonal in spin, the Hartree (gamma) coupling
+vanishes and the off-diagonal coupling is carried entirely by the long-range
+exact (Hartree-Fock) exchange. The excitation energies (which may be negative,
+i.e.\ states below the high-spin reference) are written to the file
+\verb|SF.DAT|.
+
+\textbf{Note:} This method requires a collinear spin-polarised calculation
+(\is{SpinPolarisation} $=$ \is{Colinear}, typically with
+\is{UnpairedElectrons} $= 2$ for a triplet reference) together with a
+range-separated (LC-)DFTB Hamiltonian (Section \ref{sec:dftbp.Hybrid}) to
+provide the long-range exchange kernel. It is currently available for
+molecular (non-periodic) systems with integer occupations and serial
+(non-MPI) builds only. It is the first stage towards a mixed-reference
+spin-flip (MRSF-TDDFT) implementation.
+
+\begin{ptable}
+  \kw{NrOfExcitations} & i & & - & \\
+  \kw{StateOfInterest} & i & & 0 & \\
+\end{ptable}
+
+\begin{description}
+
+\item[\is{NrOfExcitations}] Specifies the number of spin-flip excited states
+  to compute (the lowest roots of the spin-flip A-matrix).
+
+\item[\is{StateOfInterest}] Specifies the target excited state, numbered from
+  the lowest spin-flip state as 1. If set to zero (default), the energies of
+  all requested states are reported but no single state energy is returned.
+
+\end{description}
 
 \subsection{PP-RPA}
 \label{sec:dftbp.pprpa}

@@ -72,6 +72,7 @@ module dftbp_dftbplus_parser
   use dftbp_dftb_nonscc, only : diffTypes
   use dftbp_reks_reks, only : reksTypes
   use dftbp_solvation_solvparser, only : readSolvation, readCM5
+  use dftbp_timedep_linresp, only : TLinrespini
   use dftbp_timedep_linresptypes, only : linRespSolverTypes
   use dftbp_timedep_timeprop, only : TElecDynamicsInp, pertTypes, tdSpinTypes, envTypes
   use dftbp_type_commontypes, only : TOrbitals
@@ -5104,7 +5105,77 @@ contains
 
     end if
 
+    ! Collinear spin-flip (SF-TDDFT, first stage towards MRSF-TDDFT)
+    call getChild(node, "SpinFlip", child, requested=.false.)
+
+    if (associated(child)) then
+
+      if (allocated(ctrl%lrespini)) then
+        call detailedError(child, "The SpinFlip block cannot be combined with a Casida block.")
+      end if
+      if (.not. ctrl%tSpin) then
+        call detailedError(child, "Spin-flip excitations require a collinear spin-polarised&
+            & (SpinPolarisation = Colinear) calculation with a high-spin reference.")
+      end if
+
+      allocate(ctrl%lrespini)
+      call initSpinFlipDefaults(ctrl%lrespini)
+
+      call getChildValue(child, "NrOfExcitations", ctrl%lrespini%nexc)
+
+      call getChild(child, "StateOfInterest", child2, requested=.false.)
+      if (.not. associated(child2)) then
+        ctrl%lrespini%nstat = 0
+        call setChildValue(child, "StateOfInterest", 0)
+      else
+        call getChildValue(child2, "", ctrl%lrespini%nstat)
+        if (ctrl%lrespini%nstat > ctrl%lrespini%nexc) then
+          call detailedError(child2, "Invalid value, must be within range of NrOfExcitations")
+        end if
+      end if
+
+    end if
+
   end subroutine readExcited
+
+
+  !> Set default settings for a spin-flip linear-response calculation.
+  subroutine initSpinFlipDefaults(lrespini)
+
+    !> Linear response input structure to initialise
+    type(TLinrespini), intent(inout) :: lrespini
+
+    lrespini%tSpinFlip = .true.
+    ! Spin-polarised reference: no singlet/triplet symmetry label
+    lrespini%sym = ' '
+    lrespini%nexc = 0
+    lrespini%nstat = 0
+    lrespini%tEnergyWindow = .false.
+    lrespini%energyWindow = 0.0_dp
+    lrespini%tOscillatorWindow = .false.
+    lrespini%oscillatorWindow = 0.0_dp
+    lrespini%tCacheCharges = .true.
+    lrespini%tMulliken = .false.
+    lrespini%tCoeffs = .false.
+    lrespini%tGrndState = .false.
+    lrespini%tPrintEigVecs = .false.
+    lrespini%tWriteDensityMatrix = .false.
+    lrespini%tXplusY = .false.
+    lrespini%tSPTrans = .false.
+    lrespini%tTrans = .false.
+    lrespini%tTradip = .false.
+    lrespini%tTransQ = .false.
+    lrespini%tNaCoupling = .false.
+    lrespini%indNACouplings = [0, 0]
+    lrespini%isCIopt = .false.
+    lrespini%energyShiftCI = 0.0_dp
+    ! Spin-flip uses its own dense diagonaliser, independent of the RPA solver choice
+    lrespini%iLinRespSolver = linRespSolverTypes%None
+    lrespini%subSpaceFactorStratmann = 20
+    lrespini%tArnoldi = .false.
+    lrespini%tDiagnoseArnoldi = .false.
+
+  end subroutine initSpinFlipDefaults
 
 
   !> Reads the analysis block

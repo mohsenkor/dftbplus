@@ -68,6 +68,9 @@ module dftbp_timedep_linresptypes
     !> Is the ground state spin polarized
     logical :: tSpin
 
+    !> Calculate collinear spin-flip (SF-TDDFT) excitations instead of Casida
+    logical :: tSpinFlip = .false.
+
     !> Ground state spin constants for each species
     real(dp), allocatable :: spinW(:)
 

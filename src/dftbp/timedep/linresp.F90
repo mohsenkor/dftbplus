@@ -26,6 +26,7 @@ module dftbp_timedep_linresp
   use dftbp_io_message, only : error, warning
   use dftbp_io_taggedoutput, only : TTaggedWriter
   use dftbp_timedep_linrespgrad, only : LinRespGrad_old
+  use dftbp_timedep_linrespsf, only : LinRespSF_calcExcitations
   use dftbp_timedep_linresptypes, only : TLinResp, linrespSolverTypes
   use dftbp_type_commontypes, only : TOrbitals
   use dftbp_type_densedescr, only : TDenseDescr
@@ -125,6 +126,9 @@ module dftbp_timedep_linresp
     !> Diagnose output of Arnoldi solver
     logical :: tDiagnoseArnoldi
 
+    !> Calculate collinear spin-flip (SF-TDDFT) excitations instead of Casida
+    logical :: tSpinFlip = .false.
+
   end type TLinrespini
 
 
@@ -162,6 +166,9 @@ contains
 
     if (any([linrespSolverTypes%Arpack, linrespSolverTypes%Stratmann] == this%iLinRespSolver)) then
       this%tinit = .true.
+    else if (ini%tSpinFlip) then
+      ! Spin-flip uses its own dense diagonaliser, independent of the RPA solver choice
+      this%tinit = .true.
     else
       call error('Internal error: Illegal routine call to LinResp_init.')
     end if
@@ -180,6 +187,7 @@ contains
     this%tCacheChargesSame = .false.
     this%nStat = ini%nStat
     this%symmetry = ini%sym
+    this%tSpinFlip = ini%tSpinFlip
 
     this%writeExcitations = isIoProc
     this%tWriteDensityMatrix = ini%tWriteDensityMatrix .and. isIoProc
@@ -327,9 +335,14 @@ contains
 
     if (this%tInit) then
       @:ASSERT(size(orb%nOrbAtom) == this%nAtom)
-      call LinRespGrad_old(env, this, denseDesc, eigVec, eigVal, sccCalc, dqAt, coords0,&
-          & SSqrReal, filling, species0, iNeighbour, img2CentCell, orb, fdTagged, taggedWriter,&
-          & hybridXc, excEnergy, allExcEnergies)
+      if (this%tSpinFlip) then
+        call LinRespSF_calcExcitations(this, env, denseDesc, eigVec, eigVal, SSqrReal, filling,&
+            & orb, hybridXc, fdTagged, taggedWriter, excEnergy, allExcEnergies)
+      else
+        call LinRespGrad_old(env, this, denseDesc, eigVec, eigVal, sccCalc, dqAt, coords0,&
+            & SSqrReal, filling, species0, iNeighbour, img2CentCell, orb, fdTagged, taggedWriter,&
+            & hybridXc, excEnergy, allExcEnergies)
+      end if
     else
       call error('Internal error: Illegal routine call to LinResp_calcExcitations.')
     end if
