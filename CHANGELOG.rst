@@ -38,6 +38,10 @@ Added
   ~0 excitation energy); the recovery value is printed as a spin-consistency
   diagnostic.
 
+- ``tools/misc/mrsf_numgrad.py``: numerical (finite-difference) excited-state
+  gradients and geometry optimisation for (MR)SF-TD-DFTB (analytic gradients are
+  not yet available).
+
 - MPI-parallelization of Waveplot
 
 - Generalization of mixers to also handle complex density matrices
