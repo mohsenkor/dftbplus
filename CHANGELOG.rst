@@ -42,6 +42,10 @@ Added
   gradients and geometry optimisation for (MR)SF-TD-DFTB (analytic gradients are
   not yet available).
 
+- Oscillator strengths for spin-flip / MRSF excitations (transition dipoles
+  between spin-flip states in the DFTB monopole approximation), written to
+  ``SF.DAT`` and the tagged output.
+
 - MPI-parallelization of Waveplot
 
 - Generalization of mixers to also handle complex density matrices

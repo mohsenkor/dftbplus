@@ -353,7 +353,7 @@ contains
       @:ASSERT(size(orb%nOrbAtom) == this%nAtom)
       if (this%tSpinFlip) then
         call LinRespSF_calcExcitations(this, env, denseDesc, eigVec, eigVal, SSqrReal, filling,&
-            & species0, orb, hybridXc, fdTagged, taggedWriter, excEnergy, allExcEnergies)
+            & species0, coords0, orb, hybridXc, fdTagged, taggedWriter, excEnergy, allExcEnergies)
       else
         call LinRespGrad_old(env, this, denseDesc, eigVec, eigVal, sccCalc, dqAt, coords0,&
             & SSqrReal, filling, species0, iNeighbour, img2CentCell, orb, fdTagged, taggedWriter,&

@@ -97,7 +97,8 @@ contains
 
   !> Calculate collinear spin-flip / mixed-reference spin-flip excitation energies (TDA, LC-DFTB).
   subroutine LinRespSF_calcExcitations(this, env, denseDesc, grndEigVecs, grndEigVal, SSqrReal,&
-      & filling, species0, orb, hybridXc, fdTagged, taggedWriter, excEnergy, allExcEnergies)
+      & filling, species0, coords0, orb, hybridXc, fdTagged, taggedWriter, excEnergy,&
+      & allExcEnergies)
 
     !> Linear response settings
     type(TLinResp), intent(inout) :: this
@@ -123,6 +124,9 @@ contains
     !> Chemical species of the atoms
     integer, intent(in) :: species0(:)
 
+    !> Central-cell atomic coordinates (3, nAtom), for transition dipoles
+    real(dp), intent(in) :: coords0(:,:)
+
     !> Atomic orbital information
     type(TOrbitals), intent(in) :: orb
 
@@ -147,7 +151,7 @@ contains
     real(dp), allocatable :: qOO(:,:,:), qVV(:,:,:)
     real(dp), allocatable :: faOcc(:,:), fbVir(:,:), faFull(:,:), fbFull(:,:)
     real(dp), allocatable :: aMat(:,:), aMrsf(:,:), tMat(:,:), eval(:)
-    real(dp), allocatable :: s2(:), xExp(:), wAtom(:)
+    real(dp), allocatable :: s2(:), xExp(:), wAtom(:), oscStr(:), xExpMat(:,:)
     integer, allocatable :: getIA(:,:), labIA(:,:), domIA(:,:)
     integer :: it1, it2
     real(dp) :: recoveryEnergy
@@ -282,32 +286,40 @@ contains
         ! configurations so that closed->SOMO and SOMO->virtual states become spin pure.
         call mrsfSpinComplete(aMrsf, labIA, nOccA, nOccB, this%sfMultiplicity, this%nExc, env,&
             & denseDesc, ovrXev, shVecs, lrGamma, eval, s2, domIA, nState)
+        ! Oscillator strengths not yet available in the augmented (spin-complete) basis
+        allocate(oscStr(nState))
+        oscStr(:) = 0.0_dp
       else
         ! Unrestricted reference: SOMO-pair adaptation only, within-manifold <S^2>
         nMat = size(aMrsf, dim=1)
         allocate(eval(nMat))
         call heev(aMrsf, eval, "U", "V")
         nState = min(this%nExc, nMat)
-        allocate(s2(nState), domIA(nState, 2), xExp(nSF))
+        allocate(s2(nState), domIA(nState, 2), xExp(nSF), xExpMat(nSF, nState))
         do iState = 1, nState
           xExp(:) = matmul(tMat, aMrsf(:, iState))
+          xExpMat(:, iState) = xExp
           s2(iState) = sfSpinSquare(xExp, getIA, nOccA, nOccB)
           domIA(iState, :) = labIA(maxloc(aMrsf(:, iState)**2, dim=1), :)
         end do
+        allocate(oscStr(nState))
+        call sfOscillator(xExpMat, eval, qOO, qVV, coords0, nOccA, nOccB, nVirB, oscStr)
       end if
-      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, this%sfMultiplicity,&
-          & recoveryEnergy)
+      call writeSFResults(eval, domIA, nState, s2, oscStr, fdTagged, taggedWriter,&
+          & this%sfMultiplicity, recoveryEnergy)
     else
       ! Plain (spin-contaminated) spin-flip TDDFT
       allocate(eval(nSF))
       call heev(aMat, eval, "U", "V")
       nState = min(this%nExc, nSF)
-      allocate(s2(nState), domIA(nState, 2))
+      allocate(s2(nState), domIA(nState, 2), oscStr(nState))
       do iState = 1, nState
         s2(iState) = sfSpinSquare(aMat(:, iState), getIA, nOccA, nOccB)
         domIA(iState, :) = getIA(maxloc(aMat(:, iState)**2, dim=1), :)
       end do
-      call writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, 0, recoveryEnergy)
+      call sfOscillator(aMat(:, 1:nState), eval, qOO, qVV, coords0, nOccA, nOccB, nVirB, oscStr)
+      call writeSFResults(eval, domIA, nState, s2, oscStr, fdTagged, taggedWriter, 0,&
+          & recoveryEnergy)
     end if
 
     allocate(allExcEnergies(nState))
@@ -435,6 +447,109 @@ contains
     end do
 
   end subroutine addSpinFlipW
+
+
+  !> Oscillator strengths for spin-flip absorption from the lowest state (state 1) to each state.
+  !!
+  !! The transition dipole between two spin-flip states m, n (with expanded amplitudes X) is
+  !!   d_{mn} = sum_{i,a,b} X^m_{ia} X^n_{ib} mu^beta_{ab} - sum_{i,j,a} X^m_{ia} X^n_{ja} mu^alpha_{ij},
+  !! with the DFTB monopole MO dipole mu_{pq} = sum_A q^{pq}_A R_A. The oscillator strength is
+  !! f_n = (2/3) (omega_n - omega_0) |d_{0n}|^2. The construction is translation invariant
+  !! (sum_A q^{pq}_A = delta_pq).
+  subroutine sfOscillator(xExp, eval, qOO, qVV, coords0, nOccA, nOccB, nVirB, osc)
+
+    !> Expanded spin-flip amplitudes (nSF, nState), columns are states (ascending energy)
+    real(dp), intent(in) :: xExp(:,:)
+
+    !> Excitation energies (ascending)
+    real(dp), intent(in) :: eval(:)
+
+    !> Alpha occ-occ and beta vir-vir transition charges
+    real(dp), intent(in) :: qOO(:,:,:), qVV(:,:,:)
+
+    !> Central-cell atomic coordinates (3, nAtom)
+    real(dp), intent(in) :: coords0(:,:)
+
+    !> Orbital-space sizes
+    integer, intent(in) :: nOccA, nOccB, nVirB
+
+    !> Oscillator strengths on exit
+    real(dp), intent(out) :: osc(:)
+
+    integer :: nState, ii, jj, ap, bp, xyz, nn
+    real(dp), allocatable :: dipOO(:,:,:), dipVV(:,:,:), x0(:,:), xn(:,:)
+    real(dp) :: dvec(3), dw
+
+    nState = size(xExp, dim=2)
+
+    ! monopole MO dipole integrals mu_{pq}[xyz] = sum_A q^{pq}_A R_A[xyz]
+    allocate(dipOO(3, nOccA, nOccA), dipVV(3, nVirB, nVirB))
+    do ii = 1, nOccA
+      do jj = 1, nOccA
+        do xyz = 1, 3
+          dipOO(xyz, ii, jj) = sum(coords0(xyz, :) * qOO(:, ii, jj))
+        end do
+      end do
+    end do
+    do ap = 1, nVirB
+      do bp = 1, nVirB
+        do xyz = 1, 3
+          dipVV(xyz, ap, bp) = sum(coords0(xyz, :) * qVV(:, ap, bp))
+        end do
+      end do
+    end do
+
+    allocate(x0(nOccA, nVirB), xn(nOccA, nVirB))
+    call reshapeAmp(xExp(:, 1), nOccA, nVirB, x0)
+
+    osc(1) = 0.0_dp
+    do nn = 2, nState
+      call reshapeAmp(xExp(:, nn), nOccA, nVirB, xn)
+      dvec(:) = 0.0_dp
+      do xyz = 1, 3
+        do ii = 1, nOccA
+          do ap = 1, nVirB
+            do bp = 1, nVirB
+              dvec(xyz) = dvec(xyz) + x0(ii, ap) * xn(ii, bp) * dipVV(xyz, ap, bp)
+            end do
+          end do
+        end do
+        do ap = 1, nVirB
+          do ii = 1, nOccA
+            do jj = 1, nOccA
+              dvec(xyz) = dvec(xyz) - x0(ii, ap) * xn(jj, ap) * dipOO(xyz, ii, jj)
+            end do
+          end do
+        end do
+      end do
+      dw = eval(nn) - eval(1)
+      osc(nn) = (2.0_dp / 3.0_dp) * dw * dot_product(dvec, dvec)
+    end do
+
+  end subroutine sfOscillator
+
+
+  !> Reshape an expanded spin-flip amplitude vector to (alpha-occ, beta-vir) form.
+  subroutine reshapeAmp(xvec, nOccA, nVirB, xmat)
+
+    !> Expanded amplitude vector (nSF), ordering iT = (i-1)*nVirB + (a - nOccB)
+    real(dp), intent(in) :: xvec(:)
+
+    !> Orbital-space sizes
+    integer, intent(in) :: nOccA, nVirB
+
+    !> Reshaped amplitudes (nOccA, nVirB)
+    real(dp), intent(out) :: xmat(:,:)
+
+    integer :: ii, ap
+
+    do ii = 1, nOccA
+      do ap = 1, nVirB
+        xmat(ii, ap) = xvec((ii - 1) * nVirB + ap)
+      end do
+    end do
+
+  end subroutine reshapeAmp
 
 
   !> Construct a restricted-open-shell (shared) MO set and the spin-resolved Fock matrices in it.
@@ -822,8 +937,9 @@ contains
   end subroutine countOccVir
 
 
-  !> Write spin-flip excitation energies, <S^2> and tagged output.
-  subroutine writeSFResults(eval, domIA, nState, s2, fdTagged, taggedWriter, mult, recoveryEnergy)
+  !> Write spin-flip excitation energies, <S^2>, oscillator strengths and tagged output.
+  subroutine writeSFResults(eval, domIA, nState, s2, osc, fdTagged, taggedWriter, mult,&
+      & recoveryEnergy)
 
     !> Excitation energies (ascending)
     real(dp), intent(in) :: eval(:)
@@ -836,6 +952,9 @@ contains
 
     !> Spin-square of each reported state
     real(dp), intent(in) :: s2(:)
+
+    !> Oscillator strength of each reported state (from the lowest state)
+    real(dp), intent(in) :: osc(:)
 
     !> File id for tagged output
     type(TFileDescr), intent(in) :: fdTagged
@@ -865,21 +984,22 @@ contains
     write(stdOut, "(/,A)") " "//trim(methodStr)//" excitations:"
     write(stdOut, "(2X,A,F12.6,A)") "Reference recovery (should be ~0): ",&
         & recoveryEnergy * Hartree__eV, " eV"
-    write(stdOut, "(2X,A6,2X,A14,2X,A12,2X,A8,2X,A12)") "State", "energy (eV)", "omega (au)",&
-        & "<S^2>", "dominant i->a"
+    write(stdOut, "(2X,A6,2X,A14,2X,A12,2X,A8,2X,A10,2X,A12)") "State", "energy (eV)",&
+        & "omega (au)", "<S^2>", "f_osc", "dominant i->a"
 
     call openFile(fdSF, sfExcitationsOut, mode="w")
     write(fdSF%unit, "(A)") "# "//trim(methodStr)//" excitations"
     write(fdSF%unit, "(A,F16.8,A)") "# reference recovery (should be ~0): ",&
         & recoveryEnergy * Hartree__eV, " eV"
-    write(fdSF%unit, "(A)") "# state    energy(eV)         omega(au)        <S^2>     dominant"
+    write(fdSF%unit, "(A)") "# state    energy(eV)         omega(au)        <S^2>      f_osc&
+        &      dominant"
 
     do iState = 1, nState
-      write(stdOut, "(2X,I6,2X,F14.6,2X,F12.6,2X,F8.4,2X,I5,A,I5)") iState,&
-          & eval(iState) * Hartree__eV, eval(iState), s2(iState),&
+      write(stdOut, "(2X,I6,2X,F14.6,2X,F12.6,2X,F8.4,2X,F10.5,2X,I5,A,I5)") iState,&
+          & eval(iState) * Hartree__eV, eval(iState), s2(iState), osc(iState),&
           & domIA(iState, 1), " ->", domIA(iState, 2)
-      write(fdSF%unit, "(I6,2X,F16.8,2X,F16.8,2X,F10.5,2X,I5,A,I5)") iState,&
-          & eval(iState) * Hartree__eV, eval(iState), s2(iState),&
+      write(fdSF%unit, "(I6,2X,F16.8,2X,F16.8,2X,F10.5,2X,F12.6,2X,I5,A,I5)") iState,&
+          & eval(iState) * Hartree__eV, eval(iState), s2(iState), osc(iState),&
           & domIA(iState, 1), " ->", domIA(iState, 2)
     end do
     call closeFile(fdSF)
@@ -887,6 +1007,7 @@ contains
     if (fdTagged%isConnected()) then
       call taggedWriter%write(fdTagged%unit, tagLabels%excEgy, eval(1:nState))
       call taggedWriter%write(fdTagged%unit, "exc_spinsquared", s2(1:nState))
+      call taggedWriter%write(fdTagged%unit, tagLabels%excOsc, osc(1:nState))
     end if
 
   end subroutine writeSFResults

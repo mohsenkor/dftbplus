@@ -5778,8 +5778,11 @@ Analytic excited-state gradients are not yet available for the spin-flip module;
 numerical (finite-difference) gradients and geometry optimisation can be obtained
 with the helper script \verb|tools/misc/mrsf_numgrad.py|.
 
-The excitation energies and the spin-square $\langle \hat S^2\rangle$ of each
-state are written to the file \verb|SF.DAT|. The spin-flip kernel includes the
+The excitation energies, the spin-square $\langle \hat S^2\rangle$ and the
+oscillator strengths (transition dipoles between spin-flip states, in the DFTB
+monopole approximation; these vanish for symmetry-forbidden transitions and are
+small for transitions localised on a single atom) of each state are written to
+the file \verb|SF.DAT|. The spin-flip kernel includes the
 on-site spin (W) transverse coupling in addition to the long-range exchange, so
 that the $M_S=0$ component of the reference triplet is recovered at
 (near) zero excitation energy; this ``reference recovery'' value is printed as a
