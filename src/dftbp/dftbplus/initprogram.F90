@@ -3423,20 +3423,22 @@ contains
       #:endif
     endif
 
-    if(this%isLinResp .and. input%ctrl%lrespini%tSpinFlip) then
-      write(stdOut, "(A,':',T30,A)") "Excitation solver", "Spin-flip (TDA, dense)"
-    else if(this%isLinResp) then
-      select case(input%ctrl%lrespini%iLinRespSolver)
-      case (linrespSolverTypes%None)
-        call error("Casida solver has not been selected")
-      case (linrespSolverTypes%Arpack)
-        write(stdOut, "(A,':',T30,A)") "Casida solver", "Arpack"
-      case (linrespSolverTypes%Stratmann)
-        write(stdOut, "(A,':',T30,A,i4)") "Casida solver", "Stratmann, SubSpace: ",&
-            & input%ctrl%lrespini%subSpaceFactorStratmann
-      case default
-        call error("Unknown Casida solver")
-      end select
+    if (this%isLinResp) then
+      if (input%ctrl%lrespini%tSpinFlip) then
+        write(stdOut, "(A,':',T30,A)") "Excitation solver", "Spin-flip (TDA, dense)"
+      else
+        select case(input%ctrl%lrespini%iLinRespSolver)
+        case (linrespSolverTypes%None)
+          call error("Casida solver has not been selected")
+        case (linrespSolverTypes%Arpack)
+          write(stdOut, "(A,':',T30,A)") "Casida solver", "Arpack"
+        case (linrespSolverTypes%Stratmann)
+          write(stdOut, "(A,':',T30,A,i4)") "Casida solver", "Stratmann, SubSpace: ",&
+              & input%ctrl%lrespini%subSpaceFactorStratmann
+        case default
+          call error("Unknown Casida solver")
+        end select
+      end if
     end if
 
     if (this%tSccCalc .and. .not.this%tRestartNoSC) then
