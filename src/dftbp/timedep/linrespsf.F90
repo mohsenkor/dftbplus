@@ -34,33 +34,49 @@
 !!   * Unrestricted: the native collinear (UHF-like) alpha/beta orbitals are used; F^alpha/F^beta are
 !!     diagonal (the canonical eigenvalues) and the SOMO pair is identified by index.
 !!
-!! With MixedReference = Yes the mixed-reference spin-adaptation (MRSF-TDDFT) is applied: the two
-!! singly-occupied (SOMO) flip configurations O1->O1 and O2->O2 are combined with +-1/sqrt(2)
-!! (singlet: antisymmetric, triplet: symmetric) and the cross SOMO configurations are removed. In
-!! TDA this is the congruence A_MRSF = T^T A_SF T (cf. Lee et al., J. Chem. Phys. 149, 104101
-!! (2018)).
+!! With MixedReference = Yes the mixed-reference spin-adaptation (MRSF-TDDFT) is applied. This is NOT
+!! a generic Slater-Condon / CIS reduction of the single-reference spin-flip matrix: MRSF couples the
+!! response configurations originating from BOTH the M_S = +1 and M_S = -1 components of the mixed
+!! reference, with the specific sign conventions and block-coupling matrix elements of Lee et al.,
+!! J. Chem. Phys. 149, 104101 (2018) and its supplementary material (referred to below as SI). The
+!! configurations are classified into four types (manuscript Fig. 3): I = SOMO -> SOMO (O -> O),
+!! II = closed -> SOMO (C -> O), III = SOMO -> virtual (O -> V), IV = closed -> virtual (C -> V).
 !!
-!! The SOMO-pair adaptation purifies the open-shell (SOMO -> SOMO) states exactly. Single-SOMO
-!! configurations (closed -> SOMO and SOMO -> virtual) are spin contaminated (<S^2> ~ 1) unless the
-!! spin-complete treatment is requested (SpinComplete = Yes, ROHF reference): each single-SOMO
-!! configuration |+> (an alpha->beta excitation of the M_S=+1 reference) is then augmented with its
-!! partner |-> (the mirror beta->alpha excitation of the M_S=-1 reference). In the {|+>, |->} basis
-!!   A = [[E, -K], [-K, E]],   S^2 = [[1, 1], [1, 1]],
-!! where K is the spectator-SOMO exchange; these commute, so the eigenvectors (|+> -+ |->)/sqrt(2)
-!! are the pure triplet (E-K, S^2=2) and singlet (E+K, S^2=0). States are then selected by <S^2> for
-!! the requested multiplicity. This purifies single-SOMO states wherever the spectator exchange K is
-!! significant (confirmed for systems such as CH2, where most states reach <S^2> = 0 / 2 to ~1e-3);
-!! residual contamination remains for small-K configurations.
+!! Type I (the SOMO pair O1, O2). The two SOMO orbitals carry four flip determinants, labelled (SI
+!! Fig. S2) G (both electrons in O1), D (both in O2), L and R (one electron in each SOMO). In the
+!! present alpha-occ -> beta-vir bookkeeping O1->O1 and O2->O2 are the open (L, R) determinants and
+!! O2->O1, O1->O2 are the closed (G, D) determinants. Symmetrizing over the M_S = +1 / -1 references
+!! with the sign settings of SI p.10 (B_GL = -B_GR, B_DL = -B_DR, B_LL = B_RR) splits them into
+!!   triplet:  (L + R)/sqrt(2)                       [one configuration, <S^2> = 2],
+!!   singlet:  G, D, (L - R)/sqrt(2)                 [three configurations, <S^2> = 0].
+!! In TDA, and because the references are spin partners (A_{X,+1} = A_{X,-1}), this symmetrization is
+!! realised here by the congruence A_MRSF = T^T A_SF T with the corresponding +-1/sqrt(2) columns.
 !!
-!! The closed->virtual (four-open-shell) block is a fundamental limit of any singles/TDA treatment:
-!! its two singly-excited determinants span only the pure triplet plus a singlet/quintet mixture
-!! (the S^2 matrix in that subspace is exactly 2*I). The pure closed->virtual singlet requires the
-!! doubly-spin-flipped determinant - a double excitation - and is therefore not accessible here (nor
-!! in single-reference SF-TDDFT). Such configurations carry <S^2> ~ 2 and are excluded from singlet
-!! spectra by the multiplicity selection.
+!! Types II, III (single-SOMO, C -> O and O -> V). These are spin contaminated (<S^2> ~ 1) unless the
+!! spin-complete treatment is requested (SpinComplete = Yes, ROHF reference): each M_S = +1
+!! configuration |+> is paired with its M_S = -1 partner |-> (SI Eq. S8.1, the U' transform). The
+!! pairing introduces the spin-pairing coupling of manuscript Eq. (3.11) / Fig. 5,
+!!   C_pq = c_H <Psi^{M_S=+1} | H | Psi^{M_S=-1}>,   c_H = exact-exchange fraction,
+!! a cross-reference exchange matrix element. By Slater-Condon the two partner determinants differ in
+!! two spin-orbitals (the hole and the spectator SOMO), so C_pq = -c_H K_{spectator,hole} < 0, with
+!! K the long-range (LC) exchange integral. In the {|+>, |->} basis (SI Eq. S8.9/S8.10)
+!!   A = [[E, C], [C, E]],   S^2 = [[1, 1], [1, 1]],   C = -c_H K,
+!! whose eigenvectors (|+> +- |->)/sqrt(2) are the pure triplet (E + C = E - c_H K, S^2 = 2, the
+!! symmetric combination) and singlet (E - C = E + c_H K, S^2 = 0). States are selected by <S^2> for
+!! the requested multiplicity. This is the coupling that lifts the residual multiplet degeneracy of
+!! single-reference SF-TDDFT (confirmed for systems such as CH2, where most states reach
+!! <S^2> = 0 / 2 to ~1e-3); residual contamination remains where the exchange K is small.
 !!
-!! <S^2> is evaluated exactly in the shared-orbital (ROHF) basis. For the plain spin-flip and the
-!! SOMO-pair-only MRSF, from
+!! Type IV (closed -> virtual, C -> V) is NOT yet spin-complete - in agreement with the manuscript,
+!! only one of the five missing configurations (the triplet partner) is recoverable at the
+!! singles/TDA level; the pure C -> V singlet requires the doubly-spin-flipped determinant (a double
+!! excitation) and is absent here (as in single-reference SF-TDDFT). These configurations carry
+!! <S^2> ~ 2, are kept on the triplet side, and are excluded from singlet spectra by the multiplicity
+!! selection. Their contribution to the low-lying states is expected to be small (manuscript Sec.
+!! III A) and they are not augmented.
+!!
+!! <S^2> is evaluated exactly in the shared-orbital (ROHF) basis (SI Eq. S7.11). For the plain
+!! spin-flip and the SOMO-pair-only MRSF,
 !!   <S^2> = (X_{O1->O1} + X_{O2->O2})^2 + sum_ia X_ia^2 ([a virtual] + [i closed]);
 !! for the spin-complete MRSF, from the augmented S^2 matrix above.
 !!
@@ -656,8 +672,19 @@ contains
 
   !> Reduce the spin-flip A-matrix to the mixed-reference (MRSF) spin-adapted A-matrix.
   !!
-  !! Builds the spin-adaptation transformation T (orthonormal columns) that combines the two
-  !! singly-occupied (SOMO) flip configurations O1->O1 and O2->O2, and returns A_MRSF = T^T A_SF T.
+  !! Performs the type I (SOMO -> SOMO) symmetrization of MRSF (SI Sec. 5 / Eqs S8.7-S8.8). The two
+  !! SOMOs O1, O2 carry four flip determinants (SI Fig. S2): in the alpha-occ -> beta-vir bookkeeping
+  !! used here the open determinants L, R are O1->O1 (ijlr1) and O2->O2 (ijlr2), and the closed
+  !! determinants G, D are O2->O1 (ijg) and O1->O2 (ijd). Applying the sign settings of SI p.10
+  !! (B_GL = -B_GR, B_DL = -B_DR, B_LL = B_RR) the symmetrized configurations are
+  !!   triplet:  (L + R)/sqrt(2) = (ijlr1 + ijlr2)/sqrt(2)            [keep; remove G, D],
+  !!   singlet:  G, D, (L - R)/sqrt(2) = ijg, ijd, (ijlr1 - ijlr2)/sqrt(2)  [keep; one open combo].
+  !! Because the M_S = +1 and M_S = -1 references are spin partners (A_{X,+1} = A_{X,-1}), this
+  !! symmetrization is realised in TDA by the congruence A_MRSF = T^T A_SF T, where the column of T
+  !! for the retained open combination carries +-1/sqrt(2) on (ijlr1, ijlr2). The single-reference
+  !! SF matrix A_SF therefore supplies the diagonal B-blocks; the cross-reference spin-pairing
+  !! coupling C (manuscript Eq. 3.11) enters only for types II/III/IV and is added in
+  !! mrsfSpinComplete.
   subroutine mrsfReduce(aSF, getIA, nOccA, nOccB, nVirB, mult, aMrsf, labIA, tMat)
 
     !> Spin-flip A-matrix in the expanded basis
@@ -698,6 +725,9 @@ contains
     o1 = nOccB + 1
     o2 = nOccB + 2
 
+    ! SI Fig. S2 determinants in alpha-occ -> beta-vir bookkeeping:
+    !   ijlr1 = O1->O1, ijlr2 = O2->O2  : open determinants L, R (one electron in each SOMO)
+    !   ijg   = O2->O1, ijd   = O1->O2  : closed determinants G, D (both electrons in one SOMO)
     ijlr1 = (o1 - 1) * nVirB + (o1 - nOccB)
     ijlr2 = (o2 - 1) * nVirB + (o2 - nOccB)
     ijg = (o2 - 1) * nVirB + (o1 - nOccB)
@@ -706,10 +736,12 @@ contains
     allocate(active(nSF))
     active(:) = .true.
     if (mult == 1) then
+      ! singlet type I = { G (ijg), D (ijd), (L - R)/sqrt(2) }: drop ijlr2, keep ijlr1 as (L - R)
       active(ijlr2) = .false.
       nRem = 1
       signLr2 = -isq2
     else
+      ! triplet type I = { (L + R)/sqrt(2) }: drop the closed G, D and keep ijlr1 as (L + R)
       active(ijlr2) = .false.
       active(ijg) = .false.
       active(ijd) = .false.
@@ -742,16 +774,27 @@ contains
   end subroutine mrsfReduce
 
 
-  !> Spin-complete MRSF: augment the single-SOMO blocks of the reduced MRSF matrix with their
-  !! M_S = -1 partner configurations, so that closed->SOMO and SOMO->virtual states become spin pure.
+  !> Spin-complete MRSF: augment the type II (closed->SOMO) and type III (SOMO->virtual) blocks of
+  !! the reduced MRSF matrix with their M_S = -1 partner configurations (SI Eq. S8.1, the U'
+  !! transform), so that these states become spin pure.
   !!
   !! Each single-SOMO spin-flip configuration |+> (an alpha->beta excitation of the M_S=+1 reference)
-  !! has a partner |-> (the mirror beta->alpha excitation of the M_S=-1 reference). In the basis
-  !! {|+>, |->} the response and spin-square blocks are
-  !!   A = [[E, -K], [-K, E]],   S^2 = [[1, 1], [1, 1]],
-  !! with K the spectator-SOMO exchange. These commute, so the eigenvectors (|+> -+ |->)/sqrt(2) are
-  !! the pure triplet (E-K, S^2=2) and singlet (E+K, S^2=0). The full augmented matrices are
-  !! diagonalised together; states are then selected by their <S^2> for the requested multiplicity.
+  !! has a partner |-> (the mirror beta->alpha excitation of the M_S=-1 reference). The two are
+  !! coupled by the spin-pairing matrix element of manuscript Eq. (3.11) / Fig. 5,
+  !!   C = c_H <Psi^{M_S=+1} | H | Psi^{M_S=-1}>,   c_H = exact-exchange fraction (= cExchange here).
+  !! The partner determinants differ in two spin-orbitals - the hole (closed orbital for type II, or
+  !! the particle virtual for type III) and the spectator SOMO - so by Slater-Condon C reduces to a
+  !! single cross-reference exchange integral, C = -c_H K with K = q^{spec,part} . gamma^LR .
+  !! q^{spec,part} >= 0 the long-range exchange between the spectator SOMO and the partner orbital.
+  !! In the basis {|+>, |->} the response and spin-square blocks are (SI Eq. S8.9/S8.10)
+  !!   A = [[E, C], [C, E]],   S^2 = [[1, 1], [1, 1]],   C = -c_H K,
+  !! These commute, so the eigenvectors (|+> +- |->)/sqrt(2) are the pure triplet (E + C = E - c_H K,
+  !! S^2=2, the symmetric combination) and singlet (E - C = E + c_H K, S^2=0). The full augmented
+  !! matrices are diagonalised together; states are selected by <S^2> for the requested multiplicity.
+  !!
+  !! Type IV (closed->virtual) is left un-augmented: only its triplet partner is recoverable at the
+  !! singles/TDA level (manuscript Sec. III A), so these configurations keep <S^2> ~ 2 and are
+  !! excluded from the singlet spectrum by the multiplicity selection.
   subroutine mrsfSpinComplete(aMrsf, labIA, nOccA, nOccB, mult, nExc, env, denseDesc, ovrXev,&
       & shVecs, lrGamma, evalOut, s2Out, domOut, nStateOut)
 
@@ -856,7 +899,10 @@ contains
       s2Aug(nC + kk, nC + kk) = 1.0_dp
     end do
 
-    ! Cross (M_S=+1 <-> M_S=-1) coupling: spectator-SOMO exchange and the spin-square coupling
+    ! Cross (M_S=+1 <-> M_S=-1) coupling: the spin-pairing matrix element C of manuscript Eq. (3.11),
+    !   C = c_H <Psi^{+1}|H|Psi^{-1}> = -c_H K,   c_H = cExchange,
+    ! with K = q^{spec,part} . gamma^LR . q^{spec,part} the long-range exchange between the spectator
+    ! SOMO and the partner (hole/particle) orbital. The accompanying S^2 cross term is 1 (SI S7.11).
     allocate(qpq(nAtom))
     do kk = 1, nP
       r = somoCfg(kk)
